@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from .database import SessionLocal
-from .models import MonitorRecord, MonitorTask
+from .models import MonitorRecord, MonitorTask, ReachAlert, User
 
 
 def _load_fetch_likes():
@@ -58,6 +58,7 @@ class MonitorScheduler:
         self.interval_max_sec = int(os.getenv("SCHED_INTERVAL_MAX_SEC", "480"))
         self.cooldown_min_sec = int(os.getenv("SCHED_COOLDOWN_MIN_SEC", "900"))
         self.cooldown_max_sec = int(os.getenv("SCHED_COOLDOWN_MAX_SEC", "1800"))
+        self.stagger_sec_max = float(os.getenv("SCHED_STAGGER_SEC_MAX", "0.25"))
 
     def start(self) -> bool:
         with self._lock:
@@ -97,12 +98,26 @@ class MonitorScheduler:
             now = time.time()
             db: Session = SessionLocal()
             try:
-                tasks = db.query(MonitorTask).filter(MonitorTask.enabled.is_(True)).all()
+                tasks = (
+                    db.query(MonitorTask)
+                    .join(User, MonitorTask.user_id == User.id)
+                    .options(joinedload(MonitorTask.user))
+                    .filter(
+                        MonitorTask.enabled.is_(True),
+                        User.monitoring_active.is_(True),
+                        User.monitoring_paused.is_(False),
+                    )
+                    .all()
+                )
+                tasks = list(tasks)
+                random.shuffle(tasks)
                 for task in tasks:
                     state = self._states.setdefault(task.id, TaskRuntimeState())
                     if state.next_run_at and now < state.next_run_at:
                         continue
                     self._run_task(task, state)
+                    if self.stagger_sec_max > 0:
+                        time.sleep(random.uniform(0, self.stagger_sec_max))
             finally:
                 db.close()
             time.sleep(1.0)
@@ -128,12 +143,33 @@ class MonitorScheduler:
             db.commit()
             if likes >= task.target_likes and not state.reached_notified:
                 state.reached_notified = True
+                db.add(
+                    ReachAlert(
+                        user_id=task.user_id,
+                        task_id=task.id,
+                        task_name=task.name,
+                        likes=likes,
+                        target_likes=task.target_likes,
+                    )
+                )
+                db.commit()
                 print(
                     f"[scheduler] task={task.id} reached target, likes={likes}, target={task.target_likes}"
                 )
-            state.next_run_at = time.time() + random.uniform(
-                self.interval_min_sec, self.interval_max_sec
+            u = task.user
+            imin = (
+                u.interval_min_sec
+                if u.interval_min_sec is not None
+                else self.interval_min_sec
             )
+            imax = (
+                u.interval_max_sec
+                if u.interval_max_sec is not None
+                else self.interval_max_sec
+            )
+            if imin > imax:
+                imin, imax = imax, imin
+            state.next_run_at = time.time() + random.uniform(float(imin), float(imax))
         except Exception as e:
             state.last_error = str(e)
             state.fail_count += 1

@@ -84,3 +84,38 @@ class TaskOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class MonitorStatusOut(BaseModel):
+    monitoring_active: bool
+    monitoring_paused: bool
+    interval_min_sec: int | None = None
+    interval_max_sec: int | None = None
+    global_scheduler_running: bool
+
+
+class MonitorSettingsPatch(BaseModel):
+    interval_min_sec: int | None = Field(default=None, ge=30, le=3600)
+    interval_max_sec: int | None = Field(default=None, ge=30, le=7200)
+
+
+class MyRecordRow(BaseModel):
+    id: int
+    task_id: int
+    task_name: str
+    checked_at: datetime
+    likes: int | None
+    success: bool
+    error_message: str
+
+
+class ReachAlertOut(BaseModel):
+    id: int
+    task_id: int
+    task_name: str
+    likes: int
+    target_likes: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

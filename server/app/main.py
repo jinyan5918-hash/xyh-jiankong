@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine
 from .deps import get_current_user, get_db
-from .models import Device, MonitorRecord, MonitorTask, User
+from .models import Device, MonitorRecord, MonitorTask, ReachAlert, User
 from .schemas import (
     LoginRequest,
     TaskCreate,
@@ -19,6 +19,10 @@ from .schemas import (
     UserCreate,
     UserOut,
     UserUpdate,
+    MonitorStatusOut,
+    MonitorSettingsPatch,
+    MyRecordRow,
+    ReachAlertOut,
 )
 from .security import create_access_token, hash_password, verify_password
 from .scheduler import scheduler
@@ -32,6 +36,7 @@ def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()
     _ensure_admin()
+    scheduler.start()
 
 
 def _run_lightweight_migrations() -> None:
@@ -41,6 +46,16 @@ def _run_lightweight_migrations() -> None:
             cols = {c["name"] for c in insp.get_columns("devices")}
             if "is_active" not in cols:
                 conn.execute(text("ALTER TABLE devices ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+        if "users" in insp.get_table_names():
+            ucols = {c["name"] for c in insp.get_columns("users")}
+            if "monitoring_active" not in ucols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN monitoring_active BOOLEAN DEFAULT 1"))
+            if "monitoring_paused" not in ucols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN monitoring_paused BOOLEAN DEFAULT 0"))
+            if "interval_min_sec" not in ucols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN interval_min_sec INTEGER"))
+            if "interval_max_sec" not in ucols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN interval_max_sec INTEGER"))
 
 
 def _ensure_admin() -> None:
@@ -187,6 +202,142 @@ def delete_task(
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     db.delete(task)
+    db.commit()
+    return {"ok": True}
+
+
+def _user_row(db: Session, user_id: int) -> User:
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=401, detail="用户不存在")
+    return u
+
+
+@app.get("/monitor/status", response_model=MonitorStatusOut)
+def monitor_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    u = _user_row(db, current_user.id)
+    st = scheduler.status()
+    return MonitorStatusOut(
+        monitoring_active=u.monitoring_active,
+        monitoring_paused=u.monitoring_paused,
+        interval_min_sec=u.interval_min_sec,
+        interval_max_sec=u.interval_max_sec,
+        global_scheduler_running=st["running"],
+    )
+
+
+@app.post("/monitor/start")
+def monitor_start(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    u = _user_row(db, current_user.id)
+    u.monitoring_active = True
+    u.monitoring_paused = False
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/monitor/pause")
+def monitor_pause(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    u = _user_row(db, current_user.id)
+    if not u.monitoring_active:
+        raise HTTPException(status_code=400, detail="当前为停止状态，请先开始监控")
+    u.monitoring_paused = True
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/monitor/stop")
+def monitor_stop(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    u = _user_row(db, current_user.id)
+    u.monitoring_active = False
+    u.monitoring_paused = False
+    db.commit()
+    return {"ok": True}
+
+
+@app.patch("/monitor/settings")
+def monitor_settings(
+    payload: MonitorSettingsPatch,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    u = _user_row(db, current_user.id)
+    data = payload.model_dump(exclude_unset=True)
+    if "interval_min_sec" in data:
+        u.interval_min_sec = data["interval_min_sec"]
+    if "interval_max_sec" in data:
+        u.interval_max_sec = data["interval_max_sec"]
+    imin = u.interval_min_sec
+    imax = u.interval_max_sec
+    if imin is not None and imax is not None and imin > imax:
+        raise HTTPException(status_code=400, detail="间隔最小值不能大于最大值")
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/my/records", response_model=list[MyRecordRow])
+def my_records(
+    limit: int = 150,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    limit = max(1, min(limit, 500))
+    rows = (
+        db.query(MonitorRecord, MonitorTask.name)
+        .join(MonitorTask, MonitorRecord.task_id == MonitorTask.id)
+        .filter(MonitorTask.user_id == current_user.id)
+        .order_by(MonitorRecord.checked_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        MyRecordRow(
+            id=r.id,
+            task_id=r.task_id,
+            task_name=name,
+            checked_at=r.checked_at,
+            likes=r.likes,
+            success=r.success,
+            error_message=r.error_message or "",
+        )
+        for r, name in rows
+    ]
+
+
+@app.get("/alerts/unread", response_model=list[ReachAlertOut])
+def alerts_unread(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    items = (
+        db.query(ReachAlert)
+        .filter(
+            ReachAlert.user_id == current_user.id,
+            ReachAlert.acknowledged.is_(False),
+        )
+        .order_by(ReachAlert.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    return items
+
+
+@app.post("/alerts/{alert_id}/ack")
+def alert_ack(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    alert = (
+        db.query(ReachAlert)
+        .filter(ReachAlert.id == alert_id, ReachAlert.user_id == current_user.id)
+        .first()
+    )
+    if not alert:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    alert.acknowledged = True
     db.commit()
     return {"ok": True}
 

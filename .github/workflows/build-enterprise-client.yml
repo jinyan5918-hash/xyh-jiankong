@@ -30,6 +30,7 @@ jobs:
           --name EnterpriseDouyinClient
           --distpath dist
           --workpath build/pyi_enterprise_client
+          --collect-all plyer
           client/windows_client.py
 
       - name: Write config.json

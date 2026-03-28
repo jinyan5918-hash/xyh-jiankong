@@ -47,6 +47,7 @@ pyinstaller ^
   --distpath dist ^
   --workpath build\pyi_enterprise_client ^
   --specpath client ^
+  --collect-all plyer ^
   client\windows_client.py
 
 if errorlevel 1 (
