@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>抖音监控企业后台</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; background:#f7f7f9; }
+    .card { background:#fff; border:1px solid #ddd; border-radius:10px; padding:16px; margin-bottom:16px; }
+    h2 { margin:0 0 12px; }
+    input, button { padding:8px; margin:4px; }
+    table { width:100%; border-collapse:collapse; margin-top:8px; }
+    th, td { border:1px solid #ddd; padding:8px; text-align:left; font-size:14px; }
+    .row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+    .muted { color:#666; font-size:13px; }
+    .ok { color:#0a7a28; }
+    .err { color:#c21d1d; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>管理员登录</h2>
+    <div class="row">
+      <input id="username" placeholder="用户名" value="admin" />
+      <input id="password" type="password" placeholder="密码" value="Admin@123456" />
+      <button onclick="login()">登录</button>
+      <span id="loginStatus" class="muted">未登录</span>
+    </div>
+  </div>
+
+  <div id="appContent" style="display:none;">
+  <div class="card">
+    <h2>调度器控制</h2>
+    <div class="row">
+      <button onclick="schedulerStart()">启动调度器</button>
+      <button onclick="schedulerStop()">停止调度器</button>
+      <button onclick="schedulerStatus()">刷新状态</button>
+      <span id="schedulerStatus" class="muted">状态未知</span>
+    </div>
+    <pre id="schedulerDetails" class="muted"></pre>
+  </div>
+
+  <div class="card">
+    <h2>员工账号管理</h2>
+    <div class="row">
+      <input id="newUsername" placeholder="新账号名" />
+      <input id="newPassword" placeholder="初始密码（>=8位）" />
+      <input id="newMaxDevices" type="number" value="2" min="1" max="10" />
+      <button onclick="createUser()">创建账号</button>
+      <button onclick="loadUsers()">刷新列表</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th><th>用户名</th><th>设备上限</th><th>启用状态</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="usersTable"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>设备管理（可踢设备下线）</h2>
+    <div class="row">
+      <button onclick="loadDevices()">刷新设备</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>设备PK</th><th>用户ID</th><th>设备ID</th><th>设备名</th><th>状态</th><th>最后登录</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="devicesTable"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>最近检测记录</h2>
+    <div class="row">
+      <input id="filterUserId" type="number" placeholder="用户ID(可选)" style="width:130px" />
+      <input id="filterTaskId" type="number" placeholder="任务ID(可选)" style="width:130px" />
+      <select id="filterSuccess" style="padding:8px;">
+        <option value="">全部状态</option>
+        <option value="true">仅成功</option>
+        <option value="false">仅失败</option>
+      </select>
+      <input id="filterHours" type="number" placeholder="最近N小时" value="24" style="width:110px" />
+      <input id="filterLimit" type="number" placeholder="条数" value="50" style="width:90px" />
+      <button onclick="loadRecords()">刷新记录</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th><th>任务ID</th><th>检测时间</th><th>点赞</th><th>成功</th><th>错误</th>
+        </tr>
+      </thead>
+      <tbody id="recordsTable"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>统计看板</h2>
+    <div class="row">
+      <input id="statsHours" type="number" value="24" min="1" max="168" style="width:110px" />
+      <button onclick="loadStats()">刷新统计</button>
+      <span id="statsSummary" class="muted">暂无统计</span>
+    </div>
+    <table>
+      <thead>
+        <tr><th>失败原因</th><th>次数</th></tr>
+      </thead>
+      <tbody id="failTopTable"></tbody>
+    </table>
+    <table style="margin-top:12px;">
+      <thead>
+        <tr><th>小时</th><th>检测量</th></tr>
+      </thead>
+      <tbody id="checksByHourTable"></tbody>
+    </table>
+  </div>
+  </div>
+
+  <script>
+    const API = "";
+    let token = "";
+
+    function headers() {
+      return token ? { "Authorization": "Bearer " + token, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+    }
+
+    async function login() {
+      const payload = {
+        username: document.getElementById("username").value.trim(),
+        password: document.getElementById("password").value.trim(),
+        device_id: "admin-web-console",
+        device_name: "admin-web-console"
+      };
+      const r = await fetch(API + "/auth/login", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+      const t = document.getElementById("loginStatus");
+      if (!r.ok) {
+        t.className = "err";
+        t.textContent = "登录失败: " + await r.text();
+        return;
+      }
+      const data = await r.json();
+      token = data.access_token;
+      t.className = "ok";
+      t.textContent = "已登录";
+      document.getElementById("appContent").style.display = "block";
+      await loadUsers();
+      await loadDevices();
+      await loadRecords();
+      await loadStats();
+      await schedulerStatus();
+    }
+
+    async function schedulerStart() {
+      const r = await fetch(API + "/scheduler/start", { method: "POST", headers: headers() });
+      document.getElementById("schedulerStatus").textContent = r.ok ? "调度器已启动" : ("启动失败: " + await r.text());
+      await schedulerStatus();
+    }
+
+    async function schedulerStop() {
+      const r = await fetch(API + "/scheduler/stop", { method: "POST", headers: headers() });
+      document.getElementById("schedulerStatus").textContent = r.ok ? "调度器已停止" : ("停止失败: " + await r.text());
+      await schedulerStatus();
+    }
+
+    async function schedulerStatus() {
+      const r = await fetch(API + "/scheduler/status", { method: "GET", headers: headers() });
+      if (!r.ok) {
+        document.getElementById("schedulerStatus").textContent = "状态读取失败";
+        return;
+      }
+      const data = await r.json();
+      document.getElementById("schedulerStatus").textContent = data.running ? "运行中" : "未运行";
+      document.getElementById("schedulerDetails").textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function loadUsers() {
+      const r = await fetch(API + "/admin/users", { method: "GET", headers: headers() });
+      if (!r.ok) return;
+      const users = await r.json();
+      const tbody = document.getElementById("usersTable");
+      tbody.innerHTML = "";
+      for (const u of users) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${u.id}</td>
+          <td>${u.username}</td>
+          <td><input id="max_${u.id}" type="number" min="1" max="10" value="${u.max_devices}" style="width:70px"/></td>
+          <td>${u.is_active ? "启用" : "禁用"}</td>
+          <td>
+            <button onclick="toggleUser(${u.id}, ${u.is_active ? "false" : "true"})">${u.is_active ? "禁用" : "启用"}</button>
+            <button onclick="resetPwd(${u.id})">重置密码</button>
+            <button onclick="updateMax(${u.id})">更新设备上限</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function createUser() {
+      const username = document.getElementById("newUsername").value.trim();
+      const password = document.getElementById("newPassword").value.trim();
+      const maxDevices = Number(document.getElementById("newMaxDevices").value || 2);
+      if (username.length < 3) {
+        alert("新账号名至少 3 个字符");
+        return;
+      }
+      if (password.length < 8) {
+        alert("初始密码至少 8 位");
+        return;
+      }
+      const payload = {
+        username,
+        password,
+        max_devices: maxDevices,
+      };
+      const r = await fetch(API + "/admin/users", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+      if (!r.ok) {
+        let msg = "创建失败";
+        try {
+          const data = await r.json();
+          if (data?.detail) {
+            if (typeof data.detail === "string") {
+              msg = data.detail;
+            } else if (Array.isArray(data.detail)) {
+              msg = data.detail.map(x => x.msg || JSON.stringify(x)).join("；");
+            }
+          }
+        } catch (_) {
+          msg = await r.text();
+        }
+        alert("创建失败: " + msg);
+        return;
+      }
+      await loadUsers();
+      document.getElementById("newUsername").value = "";
+      document.getElementById("newPassword").value = "";
+      alert("创建成功");
+    }
+
+    async function resetPwd(userId) {
+      const p = prompt("请输入新密码（>=8位）");
+      if (!p) return;
+      const r = await fetch(API + "/admin/users/" + userId, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ password: p })
+      });
+      alert(r.ok ? "密码已重置" : ("重置失败: " + await r.text()));
+    }
+
+    async function toggleUser(userId, isActive) {
+      const r = await fetch(API + "/admin/users/" + userId, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ is_active: isActive })
+      });
+      if (!r.ok) {
+        alert("操作失败: " + await r.text());
+        return;
+      }
+      await loadUsers();
+    }
+
+    async function updateMax(userId) {
+      const v = Number(document.getElementById("max_" + userId).value || 2);
+      const r = await fetch(API + "/admin/users/" + userId, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ max_devices: v })
+      });
+      alert(r.ok ? "更新成功" : ("更新失败: " + await r.text()));
+    }
+
+    async function loadDevices() {
+      const r = await fetch(API + "/admin/devices", { method: "GET", headers: headers() });
+      if (!r.ok) return;
+      const devices = await r.json();
+      const tbody = document.getElementById("devicesTable");
+      tbody.innerHTML = "";
+      for (const d of devices) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${d.id}</td>
+          <td>${d.user_id}</td>
+          <td>${d.device_id}</td>
+          <td>${d.device_name}</td>
+          <td>${d.is_active ? "在线" : "已下线"}</td>
+          <td>${d.last_login_at}</td>
+          <td>
+            <button onclick="toggleDevice(${d.id}, ${d.is_active ? "false" : "true"})">
+              ${d.is_active ? "下线" : "恢复"}
+            </button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function toggleDevice(devicePk, activate) {
+      const endpoint = activate ? `/admin/devices/${devicePk}/activate` : `/admin/devices/${devicePk}/deactivate`;
+      const r = await fetch(API + endpoint, { method: "PATCH", headers: headers() });
+      if (!r.ok) {
+        alert("设备操作失败: " + await r.text());
+        return;
+      }
+      await loadDevices();
+    }
+
+    async function loadRecords() {
+      const userId = document.getElementById("filterUserId").value.trim();
+      const taskId = document.getElementById("filterTaskId").value.trim();
+      const success = document.getElementById("filterSuccess").value;
+      const hours = document.getElementById("filterHours").value.trim();
+      const limit = document.getElementById("filterLimit").value.trim() || "50";
+      const params = new URLSearchParams();
+      params.set("limit", limit);
+      if (userId) params.set("user_id", userId);
+      if (taskId) params.set("task_id", taskId);
+      if (success) params.set("success", success);
+      if (hours) params.set("hours", hours);
+      const r = await fetch(API + "/admin/records?" + params.toString(), { method: "GET", headers: headers() });
+      if (!r.ok) return;
+      const records = await r.json();
+      const tbody = document.getElementById("recordsTable");
+      tbody.innerHTML = "";
+      for (const rec of records) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${rec.id}</td>
+          <td>${rec.task_id}</td>
+          <td>${rec.checked_at}</td>
+          <td>${rec.likes ?? ""}</td>
+          <td>${rec.success ? "是" : "否"}</td>
+          <td>${rec.error_message || ""}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function loadStats() {
+      const hours = Number(document.getElementById("statsHours").value || 24);
+      const r = await fetch(API + "/admin/stats?hours=" + hours, { method: "GET", headers: headers() });
+      if (!r.ok) return;
+      const data = await r.json();
+      document.getElementById("statsSummary").textContent =
+        `最近${data.hours}小时：总检测 ${data.total_checks}，成功 ${data.success_count}，失败 ${data.failed_count}，成功率 ${data.success_rate}%`;
+
+      const failBody = document.getElementById("failTopTable");
+      failBody.innerHTML = "";
+      for (const item of (data.fail_top || [])) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${item.error}</td><td>${item.count}</td>`;
+        failBody.appendChild(tr);
+      }
+
+      const byHourBody = document.getElementById("checksByHourTable");
+      byHourBody.innerHTML = "";
+      for (const item of (data.checks_by_hour || [])) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${item.hour}</td><td>${item.count}</td>`;
+        byHourBody.appendChild(tr);
+      }
+    }
+  </script>
+</body>
+</html>

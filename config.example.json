@@ -1,0 +1,15 @@
+{
+  "check_interval_seconds": 60,
+  "videos": [
+    {
+      "name": "示例视频A",
+      "url": "https://www.douyin.com/video/xxxxxxxxxxxxxxxxxxx",
+      "target_likes": 1000
+    },
+    {
+      "name": "示例视频B",
+      "url": "https://v.douyin.com/xxxxxxxxx/",
+      "target_likes": 5000
+    }
+  ]
+}

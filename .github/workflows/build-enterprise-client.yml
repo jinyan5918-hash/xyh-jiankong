@@ -1,0 +1,48 @@
+# 在微软云端 Windows 上自动打包客户端，无需本机 Windows。
+# 使用：GitHub 仓库 → Actions → Build Enterprise Windows Client → Run workflow → 填写服务器地址 → 下载 Artifacts
+
+name: Build Enterprise Windows Client
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: "服务端地址（与浏览器打开后台时一致，不要带 /admin）"
+        required: true
+        default: "http://127.0.0.1:8000"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r client/requirements-client.txt pyinstaller
+
+      - name: PyInstaller
+        run: >
+          pyinstaller --noconfirm --clean --windowed
+          --name EnterpriseDouyinClient
+          --distpath dist
+          --workpath build/pyi_enterprise_client
+          client/windows_client.py
+
+      - name: Write config.json
+        env:
+          API_BASE: ${{ github.event.inputs.api_base }}
+        run: python -c "import json,os; u=os.environ['API_BASE'].strip().rstrip('/'); open(r'dist/EnterpriseDouyinClient/config.json','w',encoding='utf-8').write(json.dumps({'api_base':u},ensure_ascii=False,indent=2)+chr(10))"
+
+      - name: Copy employee readme
+        run: copy client\README_employee.txt dist\EnterpriseDouyinClient\
+
+      - name: Upload folder (GitHub 下载时会自动打成 zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EnterpriseDouyinClient-for-employees
+          path: dist/EnterpriseDouyinClient/
+          if-no-files-found: error
