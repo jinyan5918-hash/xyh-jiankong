@@ -47,12 +47,12 @@ git push -u origin main
 
 等待约 2～5 分钟，任务变绿后：
 
-7. 点进这一次运行记录，页面下方 **Artifacts** 里会有 **EnterpriseDouyinClient-for-employees**。
+7. 点进这一次运行记录，页面下方 **Artifacts** 里的 zip **名称形如** `EnterpriseDouyinClient-v1.2.0-abc1234`（版本号 + 提交短 SHA），每次成功构建名字都不同，避免误下旧包。解压后可看 **build_info.txt** 核对 `git_sha` 是否与 GitHub 最新提交一致。
 8. 点名字即可下载 **zip**。这个 zip 就是发给员工的包。
 
 ### 员工怎么用
 
-解压 zip 后，**整个文件夹**放到任意位置，双击 **EnterpriseDouyinClient.exe**，用管理员在 `/admin` 里创建的账号登录即可。**不需要**安装 Python、**不需要**改配置。
+解压 zip 后，**整个文件夹**放到任意位置，双击其中的 **EnterpriseDouyinClient-版本号.exe**（标题栏会显示 `v版本号`），用管理员在 `/admin` 里创建的账号登录即可。**不需要**安装 Python、**不需要**改配置。
 
 ---
 

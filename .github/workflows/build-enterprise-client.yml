@@ -55,11 +55,28 @@ jobs:
           python -c "import json,os; from pathlib import Path; d=Path(os.environ['PACK_DIST_DIR']); u=os.environ['API_BASE'].strip().rstrip('/'); (d/'config.json').write_text(json.dumps({'api_base':u},ensure_ascii=False,indent=2)+chr(10),encoding='utf-8')"
           Copy-Item -Force "client\README_employee.txt" $dist
           Copy-Item -Force "client\release_version.txt" $dist
+          $shaFull = $env:GITHUB_SHA
+          $shaShort = if ($shaFull.Length -ge 7) { $shaFull.Substring(0, 7) } else { $shaFull }
+          $builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $infoLines = @(
+            "client_version=$ver",
+            "git_sha=$shaFull",
+            "git_sha_short=$shaShort",
+            "github_run_id=$env:GITHUB_RUN_ID",
+            "github_run_number=$env:GITHUB_RUN_NUMBER",
+            "built_at_utc=$builtAt",
+            "repository=$env:GITHUB_REPOSITORY"
+          )
+          $infoLines | Set-Content -Path (Join-Path $dist "build_info.txt") -Encoding utf8
+          $artifactName = "EnterpriseDouyinClient-v$ver-$shaShort"
           "dist_subdir=$distName" >> $env:GITHUB_OUTPUT
+          "artifact_name=$artifactName" >> $env:GITHUB_OUTPUT
+          Write-Host "::notice::本次构建 Artifact 将命名为 $artifactName（与旧包区分：含版本号+提交短 SHA）"
+          Write-Host "::notice::解压后请打开 build_info.txt 核对 git_sha 是否与 GitHub 上最新提交一致"
 
       - name: Upload folder (GitHub 下载时会自动打成 zip)
         uses: actions/upload-artifact@v4
         with:
-          name: EnterpriseDouyinClient-for-employees
+          name: ${{ steps.pack.outputs.artifact_name }}
           path: dist/${{ steps.pack.outputs.dist_subdir }}/
           if-no-files-found: error
