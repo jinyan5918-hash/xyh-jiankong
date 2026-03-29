@@ -1,5 +1,7 @@
 # 在微软云端 Windows 上自动打包客户端，无需本机 Windows。
 # 使用：GitHub 仓库 → Actions → Build Enterprise Windows Client → Run workflow → 填写服务器地址 → 下载 Artifacts
+#
+# 注意：client/release_version.txt 必须已提交到仓库，否则本工作流会失败。
 
 name: Build Enterprise Windows Client
 
@@ -24,26 +26,40 @@ jobs:
       - name: Install dependencies
         run: pip install -r client/requirements-client.txt pyinstaller
 
-      - name: PyInstaller
-        run: >
-          pyinstaller --noconfirm --clean --windowed
-          --name EnterpriseDouyinClient
-          --distpath dist
-          --workpath build/pyi_enterprise_client
-          --collect-all plyer
-          client/windows_client.py
-
-      - name: Write config.json
+      # 用同一段 PowerShell 读版本并打包，避免 GITHUB_ENV 的 CLIENT_VER 在 ${{ env.* }} 里取不到的问题
+      - name: PyInstaller + config + copy files
+        id: pack
+        shell: pwsh
         env:
           API_BASE: ${{ github.event.inputs.api_base }}
-        run: python -c "import json,os; u=os.environ['API_BASE'].strip().rstrip('/'); open(r'dist/EnterpriseDouyinClient/config.json','w',encoding='utf-8').write(json.dumps({'api_base':u},ensure_ascii=False,indent=2)+chr(10))"
-
-      - name: Copy employee readme
-        run: copy client\README_employee.txt dist\EnterpriseDouyinClient\
+        run: |
+          if (-not (Test-Path "client/release_version.txt")) {
+            throw "缺少 client/release_version.txt。请在本机执行: git add client/release_version.txt 并 push 后再打包。"
+          }
+          $ver = (Get-Content -Path "client/release_version.txt" -TotalCount 1).Trim()
+          if ([string]::IsNullOrWhiteSpace($ver)) {
+            throw "client/release_version.txt 为空，请写入版本号（如 1.2.0）后提交。"
+          }
+          Write-Host "PACK_VERSION=$ver"
+          $distName = "EnterpriseDouyinClient-$ver"
+          pyinstaller --noconfirm --clean --windowed `
+            --name $distName `
+            --distpath dist `
+            --workpath build/pyi_enterprise_client `
+            --collect-all plyer `
+            --add-data "client/release_version.txt;." `
+            client/windows_client.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dist = Join-Path "dist" $distName
+          $env:PACK_DIST_DIR = (Resolve-Path $dist).Path
+          python -c "import json,os; from pathlib import Path; d=Path(os.environ['PACK_DIST_DIR']); u=os.environ['API_BASE'].strip().rstrip('/'); (d/'config.json').write_text(json.dumps({'api_base':u},ensure_ascii=False,indent=2)+chr(10),encoding='utf-8')"
+          Copy-Item -Force "client\README_employee.txt" $dist
+          Copy-Item -Force "client\release_version.txt" $dist
+          "dist_subdir=$distName" >> $env:GITHUB_OUTPUT
 
       - name: Upload folder (GitHub 下载时会自动打成 zip)
         uses: actions/upload-artifact@v4
         with:
           name: EnterpriseDouyinClient-for-employees
-          path: dist/EnterpriseDouyinClient/
+          path: dist/${{ steps.pack.outputs.dist_subdir }}/
           if-no-files-found: error
