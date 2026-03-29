@@ -17,7 +17,13 @@ def hash_password(raw_password: str) -> str:
 
 
 def verify_password(raw_password: str, password_hash: str) -> bool:
-    return pwd_context.verify(raw_password, password_hash)
+    # 损坏或非 passlib 格式的哈希会抛 UnknownHashError，避免登录接口变成 500
+    if not password_hash or not isinstance(password_hash, str):
+        return False
+    try:
+        return pwd_context.verify(raw_password, password_hash)
+    except Exception:
+        return False
 
 
 def create_access_token(user_id: int, device_id: str) -> str:
