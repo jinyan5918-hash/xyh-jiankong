@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from .database import Base, engine
 from .deps import get_current_user, get_db
 from .models import Device, MonitorRecord, MonitorTask, ReachAlert, User
+from .urlnorm import normalize_douyin_url_safe
 from .schemas import (
     LoginRequest,
     TaskCreate,
@@ -23,12 +25,18 @@ from .schemas import (
     MonitorSettingsPatch,
     MyRecordRow,
     ReachAlertOut,
+    UserNotifySettingsOut,
+    UserNotifySettingsPatch,
 )
 from .security import create_access_token, hash_password, verify_password
 from .scheduler import scheduler
+from .wecom import is_valid_wecom_webhook_url, pick_webhook_for_user, send_wecom_text
 
 
 app = FastAPI(title="Douyin Monitor Auth Server", version="0.1.0")
+
+# 始终从本包下的 static 读取，避免启动时工作目录不同导致后台页面不是最新
+_ADMIN_HTML = Path(__file__).resolve().parent / "static" / "admin.html"
 
 
 @app.on_event("startup")
@@ -56,6 +64,8 @@ def _run_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN interval_min_sec INTEGER"))
             if "interval_max_sec" not in ucols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN interval_max_sec INTEGER"))
+            if "wecom_webhook_url" not in ucols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN wecom_webhook_url TEXT"))
 
 
 def _ensure_admin() -> None:
@@ -85,7 +95,7 @@ def health():
 
 @app.get("/admin")
 def admin_console():
-    return FileResponse("app/static/admin.html")
+    return FileResponse(_ADMIN_HTML)
 
 
 def _require_admin(user: User) -> None:
@@ -152,10 +162,14 @@ def create_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    try:
+        video_url = normalize_douyin_url_safe(payload.video_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     task = MonitorTask(
         user_id=current_user.id,
         name=payload.name,
-        video_url=payload.video_url,
+        video_url=video_url,
         target_likes=payload.target_likes,
         enabled=payload.enabled,
     )
@@ -181,6 +195,11 @@ def update_task(
         raise HTTPException(status_code=404, detail="任务不存在")
 
     updates = payload.model_dump(exclude_unset=True)
+    if "video_url" in updates:
+        try:
+            updates["video_url"] = normalize_douyin_url_safe(updates["video_url"])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     for key, value in updates.items():
         setattr(task, key, value)
     db.commit()
@@ -201,6 +220,13 @@ def delete_task(
     )
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
+    db.query(MonitorRecord).filter(MonitorRecord.task_id == task_id).delete(
+        synchronize_session=False
+    )
+    db.query(ReachAlert).filter(
+        ReachAlert.task_id == task_id,
+        ReachAlert.user_id == current_user.id,
+    ).delete(synchronize_session=False)
     db.delete(task)
     db.commit()
     return {"ok": True}
@@ -277,6 +303,83 @@ def monitor_settings(
     return {"ok": True}
 
 
+@app.get("/user/notify-settings", response_model=UserNotifySettingsOut)
+def get_user_notify_settings(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    u = _user_row(db, current_user.id)
+    w = (u.wecom_webhook_url or "").strip()
+    configured = bool(w)
+    # 管理员账号用 Web 后台即可，客户端不强制 Webhook
+    staff = u.username != "admin"
+    return UserNotifySettingsOut(
+        wecom_webhook_url=u.wecom_webhook_url,
+        wecom_configured=configured,
+        block_operations_until_wecom=staff and not configured,
+    )
+
+
+@app.patch("/user/notify-settings", response_model=UserNotifySettingsOut)
+def patch_user_notify_settings(
+    payload: UserNotifySettingsPatch,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    u = _user_row(db, current_user.id)
+    if payload.wecom_webhook_url is not None:
+        w = payload.wecom_webhook_url.strip() if payload.wecom_webhook_url else ""
+        if u.username != "admin" and not w:
+            raise HTTPException(
+                status_code=400,
+                detail="员工账号须填写企业微信 Webhook，不可清空；如需更换请联系管理员在后台修改。",
+            )
+        if w and not is_valid_wecom_webhook_url(w):
+            raise HTTPException(
+                status_code=400,
+                detail="企业微信 Webhook 须以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头",
+            )
+        u.wecom_webhook_url = w or None
+    db.commit()
+    db.refresh(u)
+    w2 = (u.wecom_webhook_url or "").strip()
+    configured = bool(w2)
+    staff = u.username != "admin"
+    return UserNotifySettingsOut(
+        wecom_webhook_url=u.wecom_webhook_url,
+        wecom_configured=configured,
+        block_operations_until_wecom=staff and not configured,
+    )
+
+
+@app.post("/user/notify-test-wecom")
+def notify_test_wecom(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """使用当前账号已保存的 Webhook 向企业微信群发一条测试消息（由服务端调用企业微信接口）。"""
+    u = _user_row(db, current_user.id)
+    hook = pick_webhook_for_user(u.wecom_webhook_url)
+    if not hook:
+        raise HTTPException(
+            status_code=400,
+            detail="未配置企业微信 Webhook。请在下方填写后点「保存企业微信通知」，或由管理员在后台填写后在本客户端点保存同步。",
+        )
+    content = (
+        "【抖音监控】Webhook 测试\n"
+        f"账号：{u.username}\n"
+        f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}（服务器时间）"
+    )
+    try:
+        send_wecom_text(hook, content)
+    except Exception as ex:
+        raise HTTPException(
+            status_code=502,
+            detail=f"企业微信接口调用失败：{ex}",
+        ) from ex
+    return {"ok": True}
+
+
 @app.get("/my/records", response_model=list[MyRecordRow])
 def my_records(
     limit: int = 150,
@@ -311,8 +414,13 @@ def alerts_unread(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    items = (
-        db.query(ReachAlert)
+    rows = (
+        db.query(ReachAlert, MonitorTask.video_url)
+        .outerjoin(
+            MonitorTask,
+            (MonitorTask.id == ReachAlert.task_id)
+            & (MonitorTask.user_id == ReachAlert.user_id),
+        )
         .filter(
             ReachAlert.user_id == current_user.id,
             ReachAlert.acknowledged.is_(False),
@@ -321,7 +429,20 @@ def alerts_unread(
         .limit(50)
         .all()
     )
-    return items
+    out: list[ReachAlertOut] = []
+    for a, vurl in rows:
+        out.append(
+            ReachAlertOut(
+                id=a.id,
+                task_id=a.task_id,
+                task_name=a.task_name,
+                likes=a.likes,
+                target_likes=a.target_likes,
+                created_at=a.created_at,
+                video_url=(vurl or None),
+            )
+        )
+    return out
 
 
 @app.post("/alerts/{alert_id}/ack")
@@ -362,11 +483,18 @@ def admin_create_user(
     exists = db.query(User).filter(User.username == payload.username).first()
     if exists:
         raise HTTPException(status_code=400, detail="用户名已存在")
+    w = payload.wecom_webhook_url.strip()
+    if not is_valid_wecom_webhook_url(w):
+        raise HTTPException(
+            status_code=400,
+            detail="企业微信 Webhook 须以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头",
+        )
     user = User(
         username=payload.username,
         password_hash=hash_password(payload.password),
         max_devices=payload.max_devices,
         is_active=True,
+        wecom_webhook_url=w,
     )
     db.add(user)
     db.commit()
@@ -388,11 +516,46 @@ def admin_update_user(
     updates = payload.model_dump(exclude_unset=True)
     if "password" in updates:
         user.password_hash = hash_password(updates.pop("password"))
+    if "wecom_webhook_url" in updates:
+        w = updates["wecom_webhook_url"]
+        w = w.strip() if isinstance(w, str) else ""
+        if not w and user.username != "admin":
+            raise HTTPException(
+                status_code=400,
+                detail="员工账号须保留企业微信 Webhook，不可清空",
+            )
+        if w and not is_valid_wecom_webhook_url(w):
+            raise HTTPException(
+                status_code=400,
+                detail="企业微信 Webhook 格式不正确",
+            )
+        updates["wecom_webhook_url"] = w or None
     for key, value in updates.items():
         setattr(user, key, value)
     db.commit()
     db.refresh(user)
     return user
+
+
+@app.delete("/admin/users/{user_id}")
+def admin_delete_user(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_admin(current_user)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if user.username == "admin":
+        raise HTTPException(status_code=400, detail="不可删除管理员账号")
+    db.query(ReachAlert).filter(ReachAlert.user_id == user_id).delete(synchronize_session=False)
+    db.query(Device).filter(Device.user_id == user_id).delete(synchronize_session=False)
+    for t in db.query(MonitorTask).filter(MonitorTask.user_id == user_id).all():
+        db.delete(t)
+    db.delete(user)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/admin/devices", response_model=list[DeviceOut])

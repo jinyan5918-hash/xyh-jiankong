@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from .database import SessionLocal
 from .models import MonitorRecord, MonitorTask, ReachAlert, User
+from .wecom import pick_webhook_for_user, push_reach_alert
 
 
 def _load_fetch_likes():
@@ -43,7 +44,8 @@ class TaskRuntimeState:
     last_error: str = ""
     last_likes: int | None = None
     last_run_at: float = 0.0
-    reached_notified: bool = False
+    # 上次已向企微/提醒表推送时的点赞数；低于目标后清零，再次达标或继续上涨会再次推送
+    last_push_likes: int | None = None
 
 
 class MonitorScheduler:
@@ -87,7 +89,7 @@ class MonitorScheduler:
                     "last_error": s.last_error,
                     "last_likes": s.last_likes,
                     "last_run_at": s.last_run_at,
-                    "reached_notified": s.reached_notified,
+                    "last_push_likes": s.last_push_likes,
                 }
                 for task_id, s in self._states.items()
             }
@@ -132,6 +134,8 @@ class MonitorScheduler:
             state.last_likes = likes
             state.last_error = ""
             state.fail_count = 0
+            if likes < task.target_likes:
+                state.last_push_likes = None
             db.add(
                 MonitorRecord(
                     task_id=task.id,
@@ -141,21 +145,36 @@ class MonitorScheduler:
                 )
             )
             db.commit()
-            if likes >= task.target_likes and not state.reached_notified:
-                state.reached_notified = True
-                db.add(
-                    ReachAlert(
-                        user_id=task.user_id,
-                        task_id=task.id,
-                        task_name=task.name,
-                        likes=likes,
-                        target_likes=task.target_likes,
+            if likes >= task.target_likes:
+                should_notify = state.last_push_likes is None or likes > state.last_push_likes
+                if should_notify:
+                    state.last_push_likes = likes
+                    db.add(
+                        ReachAlert(
+                            user_id=task.user_id,
+                            task_id=task.id,
+                            task_name=task.name,
+                            likes=likes,
+                            target_likes=task.target_likes,
+                        )
                     )
-                )
-                db.commit()
-                print(
-                    f"[scheduler] task={task.id} reached target, likes={likes}, target={task.target_likes}"
-                )
+                    db.commit()
+                    print(
+                        f"[scheduler] task={task.id} notify reach, likes={likes}, target={task.target_likes}"
+                    )
+                    hook = pick_webhook_for_user(task.user.wecom_webhook_url)
+                    if hook:
+                        try:
+                            push_reach_alert(
+                                hook,
+                                task_id=task.id,
+                                task_name=task.name,
+                                likes=likes,
+                                target_likes=task.target_likes,
+                                video_url=task.video_url,
+                            )
+                        except Exception as ex:
+                            print(f"[wecom] push failed task={task.id}: {ex}")
             u = task.user
             imin = (
                 u.interval_min_sec

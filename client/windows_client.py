@@ -35,7 +35,9 @@ except ImportError:
     ctypes = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.0"
+CLIENT_VERSION_FALLBACK = "1.2.1"
+
+PREFS_FILENAME = "user_prefs.json"
 
 
 def _app_dir() -> Path:
@@ -63,6 +65,33 @@ def get_client_version() -> str:
         except Exception:
             pass
     return CLIENT_VERSION_FALLBACK
+
+
+def load_local_wecom_pref() -> str:
+    """exe 同目录本地缓存 Webhook，避免服务端暂未同步时每次重填。"""
+    try:
+        p = _app_dir() / PREFS_FILENAME
+        if p.is_file():
+            d = json.loads(p.read_text(encoding="utf-8"))
+            return str(d.get("wecom_webhook_url") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def save_local_wecom_pref(url: str) -> None:
+    try:
+        p = _app_dir() / PREFS_FILENAME
+        data: dict = {}
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        data["wecom_webhook_url"] = url.strip()
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def load_api_base() -> str:
@@ -164,19 +193,21 @@ class App:
         self.target_var = tk.StringVar()
         self.interval_min_var = tk.StringVar(value="180")
         self.interval_max_var = tk.StringVar(value="480")
-        self.wecom_webhook_var = tk.StringVar()
+        self.wecom_webhook_var = tk.StringVar(value=load_local_wecom_pref())
         self.status_var = tk.StringVar(value="状态：未登录")
         self._wecom_blocked = False
         self._widgets_need_wecom: list[tk.Widget] = []
 
         self._ctx_menu = None
-        self._build()
+        self._welcome_fr: ttk.Frame | None = None
+        self._main_fr: ttk.Frame | None = None
+        self._apply_styles()
+        self._build_welcome()
+        self._build_main()
         self.root.after(8000, self._tick_logs)
         self.root.after(10000, self._tick_alerts)
 
-    def _build(self) -> None:
-        pad = {"padx": 6, "pady": 4}
-
+    def _apply_styles(self) -> None:
         style = ttk.Style()
         try:
             style.configure("Treeview", rowheight=22)
@@ -189,18 +220,37 @@ class App:
         except Exception:
             self.tree_tag_highlight = "hlrow"
 
-        top = ttk.Frame(self.root, padding=12)
-        top.pack(fill="x")
-        ttk.Label(top, text="账号").pack(side="left")
-        ttk.Entry(top, textvariable=self.username_var, width=16).pack(side="left", padx=(8, 12))
-        ttk.Label(top, text="密码").pack(side="left")
-        ttk.Entry(top, textvariable=self.password_var, show="*", width=18).pack(
-            side="left", padx=(8, 12)
-        )
-        ttk.Button(top, text="登录", command=self.login).pack(side="left")
+    def _build_welcome(self) -> None:
+        self._welcome_fr = ttk.Frame(self.root)
+        inner = ttk.Frame(self._welcome_fr, padding=48)
+        inner.place(relx=0.5, rely=0.45, anchor="center")
+        ttk.Label(
+            inner,
+            text="星与海/创左内部使用，泄露追责",
+            font=("TkDefaultFont", 15, "bold"),
+            foreground="#b00020",
+            wraplength=520,
+            justify="center",
+        ).pack(pady=(0, 28))
+        ttk.Label(inner, text="企业版抖音点赞监控客户端", font=("TkDefaultFont", 12)).pack()
+        ttk.Label(inner, text=f"v{get_client_version()}", foreground="#666").pack(pady=(4, 22))
+        row1 = ttk.Frame(inner)
+        row1.pack(fill="x", pady=6)
+        ttk.Label(row1, text="账号", width=6).pack(side="left")
+        ttk.Entry(row1, textvariable=self.username_var, width=26).pack(side="left", padx=(10, 0))
+        row2 = ttk.Frame(inner)
+        row2.pack(fill="x", pady=6)
+        ttk.Label(row2, text="密码", width=6).pack(side="left")
+        ttk.Entry(row2, textvariable=self.password_var, show="*", width=26).pack(side="left", padx=(10, 0))
+        ttk.Button(inner, text="登录", command=self.login).pack(pady=(24, 0))
+        self._welcome_fr.pack(fill="both", expand=True)
+
+    def _build_main(self) -> None:
+        pad = {"padx": 6, "pady": 4}
+        self._main_fr = ttk.Frame(self.root)
 
         self.wecom_gate_label = ttk.Label(
-            self.root,
+            self._main_fr,
             text="",
             foreground="#b00020",
             wraplength=1040,
@@ -208,7 +258,7 @@ class App:
         )
         self.wecom_gate_label.pack(fill="x", padx=16, pady=(0, 4))
 
-        ctrl = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        ctrl = ttk.Frame(self._main_fr, padding=(12, 0, 12, 8))
         ctrl.pack(fill="x")
         ttk.Button(ctrl, text="测试系统通知", command=self.test_notification).pack(
             side="left", **pad
@@ -224,7 +274,7 @@ class App:
             b.pack(side="left", **pad)
             self._widgets_need_wecom.append(b)
 
-        iv = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        iv = ttk.Frame(self._main_fr, padding=(12, 0, 12, 8))
         iv.pack(fill="x")
         ttk.Label(iv, text="检测间隔最小(秒)").pack(side="left")
         e1 = ttk.Entry(iv, textvariable=self.interval_min_var, width=8)
@@ -239,7 +289,7 @@ class App:
         self._widgets_need_wecom.append(b_iv)
 
         wx_fr = ttk.LabelFrame(
-            self.root,
+            self._main_fr,
             text="手机通知：企业微信群机器人（员工账号必填；管理员可在后台为您预填，登录后自动显示）",
             padding=(10, 8),
         )
@@ -257,7 +307,7 @@ class App:
             side="left", **pad
         )
 
-        task_form = ttk.Frame(self.root, padding=12)
+        task_form = ttk.Frame(self._main_fr, padding=12)
         task_form.pack(fill="x")
         ttk.Label(task_form, text="名称").pack(side="left")
         te1 = ttk.Entry(task_form, textvariable=self.name_var, width=14)
@@ -281,7 +331,7 @@ class App:
             b.pack(side="left", **pad)
             self._widgets_need_wecom.append(b)
 
-        table_wrap = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        table_wrap = ttk.Frame(self._main_fr, padding=(12, 0, 12, 8))
         table_wrap.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(
             table_wrap,
@@ -312,12 +362,16 @@ class App:
         self._ctx_menu.add_command(label="复制视频链接", command=self._ctx_copy_url)
         self._ctx_menu.add_command(label="在浏览器中打开链接", command=self._ctx_open_url)
 
-        log_fr = ttk.LabelFrame(self.root, text="监控日志（服务端检测记录，时间为北京时间）", padding=(8, 4))
+        log_fr = ttk.LabelFrame(
+            self._main_fr,
+            text="监控日志（服务端检测记录，时间为北京时间）",
+            padding=(8, 4),
+        )
         log_fr.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         self.log_text = scrolledtext.ScrolledText(log_fr, height=9, state="disabled", wrap="word")
         self.log_text.pack(fill="both", expand=True)
 
-        bottom = ttk.Frame(self.root, padding=(12, 0, 12, 12))
+        bottom = ttk.Frame(self._main_fr, padding=(12, 0, 12, 12))
         bottom.pack(fill="x")
         ttk.Label(bottom, textvariable=self.status_var).pack(side="left")
 
@@ -526,6 +580,9 @@ class App:
                 return
             self.token = r.json()["access_token"]
             self._seen_alert_ids.clear()
+            if self._welcome_fr is not None and self._main_fr is not None:
+                self._welcome_fr.pack_forget()
+                self._main_fr.pack(fill="both", expand=True)
             self.status_var.set("状态：已登录")
             self.load_notify_settings()
             if self._wecom_blocked:
@@ -550,7 +607,11 @@ class App:
             )
             if r.status_code == 200:
                 d = r.json()
-                self.wecom_webhook_var.set(str(d.get("wecom_webhook_url") or ""))
+                srv = str(d.get("wecom_webhook_url") or "").strip()
+                local = load_local_wecom_pref()
+                self.wecom_webhook_var.set(srv or local)
+                if srv:
+                    save_local_wecom_pref(srv)
                 block = bool(d.get("block_operations_until_wecom"))
                 self.set_wecom_gate(block)
         except Exception:
@@ -575,6 +636,7 @@ class App:
                 "成功",
                 "已保存。点赞达标时服务端会向该机器人所在群推送消息；员工账号不可清空 Webhook。",
             )
+            save_local_wecom_pref(url)
             self.load_notify_settings()
             if not self._wecom_blocked:
                 self.refresh_tasks()
