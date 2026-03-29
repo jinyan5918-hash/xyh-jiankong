@@ -23,6 +23,12 @@ class User(Base):
     interval_max_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 企业微信群机器人 Webhook，达标时服务端推送（手机企业微信可见）。
     wecom_webhook_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 后台权限：none=仅客户端员工；main=主管理员；tenant=部门超级管理员（仅 /admin）
+    admin_role: Mapped[str] = mapped_column(String(16), default="none", index=True)
+    # 员工账号由哪位超级管理员创建（主管理员直接创建的员工为 NULL，仅主管理员可见）
+    created_by_admin_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
 
     devices: Mapped[list["Device"]] = relationship(back_populates="user")
     monitor_tasks: Mapped[list["MonitorTask"]] = relationship(back_populates="user")

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import func, inspect, text
+from sqlalchemy import false, func, inspect, or_, text
 from sqlalchemy.orm import Session
 
 from .database import Base, engine
@@ -27,6 +27,8 @@ from .schemas import (
     ReachAlertOut,
     UserNotifySettingsOut,
     UserNotifySettingsPatch,
+    TenantAdminCreate,
+    AdminMeOut,
 )
 from .security import create_access_token, hash_password, verify_password
 from .scheduler import scheduler
@@ -66,8 +68,15 @@ def _run_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN interval_max_sec INTEGER"))
             if "wecom_webhook_url" not in ucols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN wecom_webhook_url TEXT"))
+            if "admin_role" not in ucols:
+                conn.execute(
+                    text("ALTER TABLE users ADD COLUMN admin_role VARCHAR(16) DEFAULT 'none'")
+                )
+            if "created_by_admin_id" not in ucols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN created_by_admin_id INTEGER"))
             # 旧库可能为 NULL，会导致登录时 count >= None 抛 TypeError → 500
             conn.execute(text("UPDATE users SET max_devices = 2 WHERE max_devices IS NULL"))
+            conn.execute(text("UPDATE users SET admin_role = 'main' WHERE username = 'admin'"))
         if "devices" in insp.get_table_names():
             conn.execute(text("UPDATE devices SET is_active = 1 WHERE is_active IS NULL"))
 
@@ -83,13 +92,80 @@ def _ensure_admin() -> None:
                 User(
                     username="admin",
                     password_hash=hash_password("Admin@123456"),
-                    max_devices=3,
+                    max_devices=5,
                     is_active=True,
+                    admin_role="main",
                 )
             )
             db.commit()
+        elif (admin.admin_role or "none") not in ("main", "tenant"):
+            admin.admin_role = "main"
+            db.commit()
     finally:
         db.close()
+
+
+ADMIN_CONSOLE_DEVICE_ID = "admin-web-console"
+
+
+def _is_main_admin(u: User) -> bool:
+    return (u.admin_role or "none") == "main"
+
+
+def _is_tenant_admin(u: User) -> bool:
+    return (u.admin_role or "none") == "tenant"
+
+
+def _can_admin_console(u: User) -> bool:
+    return _is_main_admin(u) or _is_tenant_admin(u)
+
+
+def _require_admin_console(user: User) -> None:
+    if not _can_admin_console(user):
+        raise HTTPException(status_code=403, detail="仅管理员后台账号可访问")
+
+
+def _require_main_admin(user: User) -> None:
+    if not _is_main_admin(user):
+        raise HTTPException(status_code=403, detail="仅主管理员可操作")
+
+
+def _tenant_staff_ids(db: Session, tenant: User) -> list[int]:
+    rows = (
+        db.query(User.id)
+        .filter(
+            User.admin_role == "none",
+            User.created_by_admin_id == tenant.id,
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+def _admin_may_access_user(db: Session, admin: User, target: User | None) -> bool:
+    if not target:
+        return False
+    if _is_main_admin(admin):
+        if target.admin_role == "main":
+            return target.id == admin.id
+        return True
+    if _is_tenant_admin(admin):
+        if target.id == admin.id:
+            return True
+        if (target.admin_role or "none") != "none":
+            return False
+        return target.created_by_admin_id == admin.id
+    return False
+
+
+def _records_query_scoped(db: Session, admin: User):
+    q = db.query(MonitorRecord).join(MonitorTask, MonitorTask.id == MonitorRecord.task_id)
+    if _is_tenant_admin(admin):
+        ids = _tenant_staff_ids(db, admin)
+        if not ids:
+            return q.filter(false())
+        q = q.filter(MonitorTask.user_id.in_(ids))
+    return q
 
 
 @app.get("/health")
@@ -102,16 +178,25 @@ def admin_console():
     return FileResponse(_ADMIN_HTML)
 
 
-def _require_admin(user: User) -> None:
-    if user.username != "admin":
-        raise HTTPException(status_code=403, detail="仅管理员可访问")
-
-
 @app.post("/auth/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == payload.username).first()
     if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="账号或密码错误")
+
+    role = user.admin_role or "none"
+    dev = payload.device_id.strip()
+    if role in ("main", "tenant"):
+        if dev != ADMIN_CONSOLE_DEVICE_ID:
+            raise HTTPException(
+                status_code=403,
+                detail="该账号仅限浏览器打开「管理员后台」登录，不可用于 Windows 客户端",
+            )
+    elif dev == ADMIN_CONSOLE_DEVICE_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="员工账号请使用 Windows 客户端登录；管理员后台请使用主管理员或超级管理员账号",
+        )
 
     device = (
         db.query(Device)
@@ -125,7 +210,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         count = active_devices_q.count()
         max_slots = user.max_devices
         if max_slots is None:
-            max_slots = 3 if user.username == "admin" else 2
+            max_slots = 5 if role in ("main", "tenant") else 2
         max_slots = max(1, min(int(max_slots), 10))
         if count >= max_slots:
             # 满额时自动下线最久未登录设备，避免管理员被锁在后台外。
@@ -319,8 +404,8 @@ def get_user_notify_settings(
     u = _user_row(db, current_user.id)
     w = (u.wecom_webhook_url or "").strip()
     configured = bool(w)
-    # 管理员账号用 Web 后台即可，客户端不强制 Webhook
-    staff = u.username != "admin"
+    # 仅员工（客户端）强制 Webhook；主管理员 / 超级管理员不强制
+    staff = (u.admin_role or "none") == "none"
     return UserNotifySettingsOut(
         wecom_webhook_url=u.wecom_webhook_url,
         wecom_configured=configured,
@@ -337,7 +422,7 @@ def patch_user_notify_settings(
     u = _user_row(db, current_user.id)
     if payload.wecom_webhook_url is not None:
         w = payload.wecom_webhook_url.strip() if payload.wecom_webhook_url else ""
-        if u.username != "admin" and not w:
+        if (u.admin_role or "none") == "none" and not w:
             raise HTTPException(
                 status_code=400,
                 detail="员工账号须填写企业微信 Webhook，不可清空；如需更换请联系管理员在后台修改。",
@@ -352,7 +437,7 @@ def patch_user_notify_settings(
     db.refresh(u)
     w2 = (u.wecom_webhook_url or "").strip()
     configured = bool(w2)
-    staff = u.username != "admin"
+    staff = (u.admin_role or "none") == "none"
     return UserNotifySettingsOut(
         wecom_webhook_url=u.wecom_webhook_url,
         wecom_configured=configured,
@@ -471,14 +556,72 @@ def alert_ack(
     return {"ok": True}
 
 
+def _purge_user_data(db: Session, uid: int) -> None:
+    db.query(ReachAlert).filter(ReachAlert.user_id == uid).delete(synchronize_session=False)
+    db.query(Device).filter(Device.user_id == uid).delete(synchronize_session=False)
+    for t in db.query(MonitorTask).filter(MonitorTask.user_id == uid).all():
+        db.delete(t)
+    u = db.query(User).filter(User.id == uid).first()
+    if u:
+        db.delete(u)
+
+
+@app.get("/admin/me", response_model=AdminMeOut)
+def admin_me(current_user: User = Depends(get_current_user)):
+    _require_admin_console(current_user)
+    return AdminMeOut(
+        username=current_user.username,
+        admin_role=current_user.admin_role or "none",
+    )
+
+
+@app.post("/admin/tenant-admins", response_model=UserOut)
+def admin_create_tenant_admin(
+    payload: TenantAdminCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_main_admin(current_user)
+    exists = db.query(User).filter(User.username == payload.username).first()
+    if exists:
+        raise HTTPException(status_code=400, detail="用户名已存在")
+    user = User(
+        username=payload.username,
+        password_hash=hash_password(payload.password),
+        max_devices=5,
+        is_active=True,
+        wecom_webhook_url=None,
+        admin_role="tenant",
+        created_by_admin_id=None,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 @app.get("/admin/users", response_model=list[UserOut])
 def admin_list_users(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
-    users = db.query(User).order_by(User.id.asc()).all()
-    return users
+    _require_admin_console(current_user)
+    if _is_main_admin(current_user):
+        return (
+            db.query(User)
+            .filter(or_(User.admin_role == "tenant", User.admin_role == "none"))
+            .order_by(User.admin_role.desc(), User.id.asc())
+            .all()
+        )
+    return (
+        db.query(User)
+        .filter(
+            User.admin_role == "none",
+            User.created_by_admin_id == current_user.id,
+        )
+        .order_by(User.id.asc())
+        .all()
+    )
 
 
 @app.post("/admin/users", response_model=UserOut)
@@ -487,7 +630,13 @@ def admin_create_user(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
+    _require_admin_console(current_user)
+    if _is_main_admin(current_user):
+        owner_id = None
+    elif _is_tenant_admin(current_user):
+        owner_id = current_user.id
+    else:
+        raise HTTPException(status_code=403, detail="无权创建员工")
     exists = db.query(User).filter(User.username == payload.username).first()
     if exists:
         raise HTTPException(status_code=400, detail="用户名已存在")
@@ -503,6 +652,8 @@ def admin_create_user(
         max_devices=payload.max_devices,
         is_active=True,
         wecom_webhook_url=w,
+        admin_role="none",
+        created_by_admin_id=owner_id,
     )
     db.add(user)
     db.commit()
@@ -517,17 +668,19 @@ def admin_update_user(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
+    _require_admin_console(current_user)
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
+    if not _admin_may_access_user(db, current_user, user):
+        raise HTTPException(status_code=403, detail="无权操作该用户")
     updates = payload.model_dump(exclude_unset=True)
     if "password" in updates:
         user.password_hash = hash_password(updates.pop("password"))
     if "wecom_webhook_url" in updates:
         w = updates["wecom_webhook_url"]
         w = w.strip() if isinstance(w, str) else ""
-        if not w and user.username != "admin":
+        if not w and (user.admin_role or "none") == "none":
             raise HTTPException(
                 status_code=400,
                 detail="员工账号须保留企业微信 Webhook，不可清空",
@@ -551,17 +704,22 @@ def admin_delete_user(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
+    _require_admin_console(current_user)
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
-    if user.username == "admin":
-        raise HTTPException(status_code=400, detail="不可删除管理员账号")
-    db.query(ReachAlert).filter(ReachAlert.user_id == user_id).delete(synchronize_session=False)
-    db.query(Device).filter(Device.user_id == user_id).delete(synchronize_session=False)
-    for t in db.query(MonitorTask).filter(MonitorTask.user_id == user_id).all():
-        db.delete(t)
-    db.delete(user)
+    if (user.admin_role or "none") == "main":
+        raise HTTPException(status_code=400, detail="不可删除主管理员")
+    if not _admin_may_access_user(db, current_user, user):
+        raise HTTPException(status_code=403, detail="无权删除该用户")
+    if (user.admin_role or "none") == "tenant":
+        if not _is_main_admin(current_user):
+            raise HTTPException(status_code=403, detail="仅主管理员可删除超级管理员")
+        for (sid,) in db.query(User.id).filter(User.created_by_admin_id == user.id).all():
+            _purge_user_data(db, sid)
+        _purge_user_data(db, user.id)
+    else:
+        _purge_user_data(db, user.id)
     db.commit()
     return {"ok": True}
 
@@ -571,9 +729,14 @@ def admin_list_devices(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
-    devices = db.query(Device).order_by(Device.last_login_at.desc()).all()
-    return devices
+    _require_admin_console(current_user)
+    q = db.query(Device)
+    if _is_tenant_admin(current_user):
+        ids = _tenant_staff_ids(db, current_user)
+        if not ids:
+            return []
+        q = q.filter(Device.user_id.in_(ids))
+    return q.order_by(Device.last_login_at.desc()).all()
 
 
 @app.patch("/admin/devices/{device_pk}/deactivate")
@@ -582,10 +745,13 @@ def admin_deactivate_device(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
+    _require_admin_console(current_user)
     device = db.query(Device).filter(Device.id == device_pk).first()
     if not device:
         raise HTTPException(status_code=404, detail="设备不存在")
+    owner = db.query(User).filter(User.id == device.user_id).first()
+    if not _admin_may_access_user(db, current_user, owner):
+        raise HTTPException(status_code=403, detail="无权操作该设备")
     device.is_active = False
     db.commit()
     return {"ok": True}
@@ -597,10 +763,13 @@ def admin_activate_device(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
+    _require_admin_console(current_user)
     device = db.query(Device).filter(Device.id == device_pk).first()
     if not device:
         raise HTTPException(status_code=404, detail="设备不存在")
+    owner = db.query(User).filter(User.id == device.user_id).first()
+    if not _admin_may_access_user(db, current_user, owner):
+        raise HTTPException(status_code=403, detail="无权操作该设备")
     device.is_active = True
     db.commit()
     return {"ok": True}
@@ -616,9 +785,13 @@ def admin_recent_records(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
-    q = db.query(MonitorRecord).join(MonitorTask, MonitorTask.id == MonitorRecord.task_id)
+    _require_admin_console(current_user)
+    q = _records_query_scoped(db, current_user)
     if user_id is not None:
+        if _is_tenant_admin(current_user):
+            allowed = set(_tenant_staff_ids(db, current_user))
+            if user_id not in allowed:
+                raise HTTPException(status_code=403, detail="无权查看该用户数据")
         q = q.filter(MonitorTask.user_id == user_id)
     if task_id is not None:
         q = q.filter(MonitorRecord.task_id == task_id)
@@ -637,26 +810,29 @@ def admin_stats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
+    _require_admin_console(current_user)
     hours = max(1, min(hours, 168))
     since = datetime.utcnow() - timedelta(hours=hours)
 
-    total = db.query(func.count(MonitorRecord.id)).filter(MonitorRecord.checked_at >= since).scalar() or 0
-    success_count = (
-        db.query(func.count(MonitorRecord.id))
-        .filter(MonitorRecord.checked_at >= since, MonitorRecord.success.is_(True))
-        .scalar()
-        or 0
-    )
+    def _stats_base():
+        return _records_query_scoped(db, current_user).filter(
+            MonitorRecord.checked_at >= since
+        )
+
+    total = _stats_base().count()
+    success_count = _stats_base().filter(MonitorRecord.success.is_(True)).count()
     failed_count = total - success_count
     success_rate = (success_count / total * 100.0) if total else 0.0
 
     fail_top = (
-        db.query(MonitorRecord.error_message, func.count(MonitorRecord.id).label("cnt"))
+        _stats_base()
         .filter(
-            MonitorRecord.checked_at >= since,
             MonitorRecord.success.is_(False),
             MonitorRecord.error_message != "",
+        )
+        .with_entities(
+            MonitorRecord.error_message,
+            func.count(MonitorRecord.id).label("cnt"),
         )
         .group_by(MonitorRecord.error_message)
         .order_by(text("cnt DESC"))
@@ -665,11 +841,11 @@ def admin_stats(
     )
 
     by_hour_raw = (
-        db.query(
+        _stats_base()
+        .with_entities(
             func.strftime("%Y-%m-%d %H:00:00", MonitorRecord.checked_at).label("hour"),
             func.count(MonitorRecord.id).label("cnt"),
         )
-        .filter(MonitorRecord.checked_at >= since)
         .group_by("hour")
         .order_by("hour")
         .all()
@@ -689,19 +865,19 @@ def admin_stats(
 
 @app.post("/scheduler/start")
 def start_scheduler(current_user: User = Depends(get_current_user)):
-    _require_admin(current_user)
+    _require_main_admin(current_user)
     started = scheduler.start()
     return {"ok": True, "started": started}
 
 
 @app.post("/scheduler/stop")
 def stop_scheduler(current_user: User = Depends(get_current_user)):
-    _require_admin(current_user)
+    _require_main_admin(current_user)
     stopped = scheduler.stop()
     return {"ok": True, "stopped": stopped}
 
 
 @app.get("/scheduler/status")
 def scheduler_status(current_user: User = Depends(get_current_user)):
-    _require_admin(current_user)
+    _require_admin_console(current_user)
     return scheduler.status()

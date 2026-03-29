@@ -21,23 +21,40 @@
   <div class="card">
     <h2>管理员登录</h2>
     <div class="row">
-      <input id="username" placeholder="用户名" value="admin" />
-      <input id="password" type="password" placeholder="密码" value="Admin@123456" />
+      <input id="username" placeholder="用户名" />
+      <input id="password" type="password" placeholder="密码" />
       <button onclick="login()">登录</button>
       <span id="loginStatus" class="muted">未登录</span>
     </div>
   </div>
 
   <div id="appContent" style="display:none;">
-  <div class="card">
+  <div id="bannerRole" class="card" style="background:#e8f4ff;">
+    <span id="roleBannerText" class="muted"></span>
+  </div>
+
+  <div id="schedulerCard" class="card" style="display:none;">
     <h2>调度器控制</h2>
-    <div class="row">
+    <p class="muted" id="schedulerHintMain" style="display:none;">启停仅主管理员可操作；超级管理员可查看状态。</p>
+    <div class="row" id="schedulerButtonsRow" style="display:none;">
       <button onclick="schedulerStart()">启动调度器</button>
       <button onclick="schedulerStop()">停止调度器</button>
+    </div>
+    <div class="row">
       <button onclick="schedulerStatus()">刷新状态</button>
       <span id="schedulerStatus" class="muted">状态未知</span>
     </div>
     <pre id="schedulerDetails" class="muted"></pre>
+  </div>
+
+  <div id="tenantAdminCard" class="card" style="display:none;">
+    <h2>超级管理员（仅登录本后台，不用客户端）</h2>
+    <p class="muted">由主管理员为各部门经理开通；各自仅能管理自己创建的员工账号，数据与其它部门及主列表隔离。</p>
+    <div class="row">
+      <input id="taUsername" placeholder="登录名（≥3字符）" />
+      <input id="taPassword" type="password" placeholder="初始密码（≥8位）" />
+      <button onclick="createTenantAdmin()">开通超级管理员</button>
+    </div>
   </div>
 
   <div class="card">
@@ -58,7 +75,7 @@
     <table>
       <thead>
         <tr>
-          <th>ID</th><th>用户名</th><th>Webhook(摘要)</th><th>设备上限</th><th>启用状态</th><th>操作</th>
+          <th>ID</th><th>类型</th><th>用户名</th><th>Webhook(摘要)</th><th>设备上限</th><th>启用状态</th><th>操作</th>
         </tr>
       </thead>
       <tbody id="usersTable"></tbody>
@@ -129,9 +146,21 @@
   <script>
     const API = "";
     let token = "";
+    let adminRole = "none";
 
     function headers() {
       return token ? { "Authorization": "Bearer " + token, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+    }
+
+    function applyRoleUi() {
+      document.getElementById("schedulerCard").style.display = "block";
+      const isMain = adminRole === "main";
+      const isTenant = adminRole === "tenant";
+      document.getElementById("schedulerHintMain").style.display = isMain ? "block" : "none";
+      document.getElementById("schedulerButtonsRow").style.display = isMain ? "flex" : "none";
+      document.getElementById("tenantAdminCard").style.display = isMain ? "block" : "none";
+      const label = isMain ? "主管理员" : (isTenant ? "超级管理员" : "后台");
+      document.getElementById("roleBannerText").textContent = "当前身份：" + label + " — 超级管理员仅能管理本部门员工；员工请使用 Windows 客户端登录。";
     }
 
     async function login() {
@@ -153,6 +182,14 @@
       t.className = "ok";
       t.textContent = "已登录";
       document.getElementById("appContent").style.display = "block";
+      const me = await fetch(API + "/admin/me", { headers: headers() });
+      if (me.ok) {
+        const m = await me.json();
+        adminRole = m.admin_role || "none";
+      } else {
+        adminRole = "none";
+      }
+      applyRoleUi();
       await loadUsers();
       await loadDevices();
       await loadRecords();
@@ -183,6 +220,28 @@
       document.getElementById("schedulerDetails").textContent = JSON.stringify(data, null, 2);
     }
 
+    async function createTenantAdmin() {
+      const username = document.getElementById("taUsername").value.trim();
+      const password = document.getElementById("taPassword").value.trim();
+      if (username.length < 3 || password.length < 8) {
+        alert("用户名≥3字符，密码≥8位");
+        return;
+      }
+      const r = await fetch(API + "/admin/tenant-admins", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ username, password }),
+      });
+      if (!r.ok) {
+        alert("开通失败: " + await r.text());
+        return;
+      }
+      document.getElementById("taUsername").value = "";
+      document.getElementById("taPassword").value = "";
+      await loadUsers();
+      alert("已开通超级管理员");
+    }
+
     async function loadUsers() {
       const r = await fetch(API + "/admin/users", { method: "GET", headers: headers() });
       if (!r.ok) return;
@@ -190,23 +249,42 @@
       const tbody = document.getElementById("usersTable");
       tbody.innerHTML = "";
       for (const u of users) {
-        const wh = u.wecom_webhook_url || "";
-        const whShort = wh.length > 40 ? (wh.substring(0, 40) + "…") : (wh || "—");
+        const ar = u.admin_role || "none";
+        const typeLabel = ar === "tenant" ? "超级管理员" : "员工";
         const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${u.id}</td>
-          <td>${u.username}</td>
-          <td title="${wh.replace(/"/g, "&quot;")}" style="font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;">${whShort}</td>
-          <td><input id="max_${u.id}" type="number" min="1" max="10" value="${u.max_devices}" style="width:70px"/></td>
-          <td>${u.is_active ? "启用" : "禁用"}</td>
-          <td>
-            <button onclick="toggleUser(${u.id}, ${u.is_active ? "false" : "true"})">${u.is_active ? "禁用" : "启用"}</button>
-            <button onclick="resetPwd(${u.id})">重置密码</button>
-            <button onclick="updateMax(${u.id})">更新设备上限</button>
-            <button onclick="editWecom(${u.id})">修改Webhook</button>
-            ${u.username === "admin" ? "" : '<button onclick="deleteUser(' + u.id + ')">删除用户</button>'}
-          </td>
-        `;
+        if (ar === "tenant") {
+          tr.innerHTML = `
+            <td>${u.id}</td>
+            <td>${typeLabel}</td>
+            <td>${u.username}</td>
+            <td>—</td>
+            <td>—</td>
+            <td>${u.is_active ? "启用" : "禁用"}</td>
+            <td>
+              <button onclick="toggleUser(${u.id}, ${u.is_active ? "false" : "true"})">${u.is_active ? "禁用" : "启用"}</button>
+              <button onclick="resetPwd(${u.id})">重置密码</button>
+              ${adminRole === "main" ? '<button onclick="deleteUser(' + u.id + ', true)">删除（含其员工）</button>' : ""}
+            </td>
+          `;
+        } else {
+          const wh = u.wecom_webhook_url || "";
+          const whShort = wh.length > 40 ? (wh.substring(0, 40) + "…") : (wh || "—");
+          tr.innerHTML = `
+            <td>${u.id}</td>
+            <td>${typeLabel}</td>
+            <td>${u.username}</td>
+            <td title="${wh.replace(/"/g, "&quot;")}" style="font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;">${whShort}</td>
+            <td><input id="max_${u.id}" type="number" min="1" max="10" value="${u.max_devices}" style="width:70px"/></td>
+            <td>${u.is_active ? "启用" : "禁用"}</td>
+            <td>
+              <button onclick="toggleUser(${u.id}, ${u.is_active ? "false" : "true"})">${u.is_active ? "禁用" : "启用"}</button>
+              <button onclick="resetPwd(${u.id})">重置密码</button>
+              <button onclick="updateMax(${u.id})">更新设备上限</button>
+              <button onclick="editWecom(${u.id})">修改Webhook</button>
+              <button onclick="deleteUser(${u.id}, false)">删除用户</button>
+            </td>
+          `;
+        }
         tbody.appendChild(tr);
       }
     }
@@ -259,8 +337,11 @@
       alert("创建成功");
     }
 
-    async function deleteUser(userId) {
-      if (!confirm("确定删除该员工账号？将同时删除其任务、检测记录、设备与点赞提醒数据，不可恢复。")) return;
+    async function deleteUser(userId, isTenant) {
+      const msg = isTenant
+        ? "确定删除该超级管理员？其名下所有员工账号及任务、记录、设备等均会删除，不可恢复。"
+        : "确定删除该员工账号？将同时删除其任务、检测记录、设备与点赞提醒数据，不可恢复。";
+      if (!confirm(msg)) return;
       const r = await fetch(API + "/admin/users/" + userId, { method: "DELETE", headers: headers() });
       if (!r.ok) {
         alert("删除失败: " + await r.text());

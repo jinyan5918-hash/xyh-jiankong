@@ -36,6 +36,23 @@ class UserOut(BaseModel):
     max_devices: int
     is_active: bool
     wecom_webhook_url: str | None = None
+    admin_role: str = "none"
+    created_by_admin_id: int | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class TenantAdminCreate(BaseModel):
+    """主管理员创建部门超级管理员（仅登录 /admin，不可用客户端）。"""
+
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class AdminMeOut(BaseModel):
+    username: str
+    admin_role: str
 
     class Config:
         from_attributes = True
