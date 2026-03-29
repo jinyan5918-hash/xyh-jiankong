@@ -1,0 +1,19 @@
+[Unit]
+Description=Jiankong FastAPI (uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/jiankong/server
+Environment=PYTHONUNBUFFERED=1
+# 若监控日志仍大量 403：在浏览器打开抖音后从开发者工具复制 Cookie，写入下面一行（注意保密）
+# Environment=DOUYIN_COOKIE=msToken=xxx; ttwid=xxx; ...
+# 或使用住宅代理列表（逗号分隔）：Environment=DOUYIN_PROXY_POOL=http://user:pass@host:port,...
+ExecStart=/home/ubuntu/jiankong/.venv-enterprise/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

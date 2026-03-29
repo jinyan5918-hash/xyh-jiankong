@@ -20,6 +20,8 @@ VIDEO_ID_PATTERNS = [
 ]
 COOKIE_JAR = http.cookiejar.CookieJar()
 PROXY_POOL = [x.strip() for x in os.getenv("DOUYIN_PROXY_POOL", "").split(",") if x.strip()]
+# 从本机浏览器开发者工具复制 Cookie（抖音页），可缓解云服务器 403；注意勿泄露
+_DOUYIN_BROWSER_COOKIE = os.getenv("DOUYIN_COOKIE", "").strip()
 
 
 def normalize_douyin_url(raw: str) -> str:
@@ -67,29 +69,42 @@ def _is_waf_challenge_page(html: str) -> bool:
     return "_wafchallengeid" in html and "Please wait" in html
 
 
+def _request_headers(mobile_ua: bool) -> dict[str, str]:
+    ua = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+        "Mobile/15E148 Safari/604.1"
+        if mobile_ua
+        else (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        )
+    )
+    h: dict[str, str] = {
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://www.douyin.com/" if not mobile_ua else "https://m.douyin.com/",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    if _DOUYIN_BROWSER_COOKIE:
+        h["Cookie"] = _DOUYIN_BROWSER_COOKIE
+    return h
+
+
 def _request_text(
     url: str,
     insecure_ssl: bool = False,
     auto_fallback_ssl: bool = True,
     mobile_ua: bool = False,
+    *,
+    allow_ua_fallback: bool = True,
 ) -> tuple[str, str]:
-    ua = (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
-        if mobile_ua
-        else (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        )
-    )
     req = urllib.request.Request(
         url=url,
-        headers={
-            "User-Agent": ua,
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Referer": "https://www.douyin.com/",
-        },
+        headers=_request_headers(mobile_ua),
         method="GET",
     )
 
@@ -142,6 +157,17 @@ def _request_text(
 
     try:
         html, final_url = _open_html(insecure_ssl)
+    except urllib.error.HTTPError as e:
+        # 机房 IP 常见 403：自动换另一种 UA 再试一次（仅一次，避免死循环）
+        if e.code == 403 and allow_ua_fallback:
+            return _request_text(
+                url,
+                insecure_ssl,
+                auto_fallback_ssl,
+                not mobile_ua,
+                allow_ua_fallback=False,
+            )
+        raise
     except urllib.error.URLError as e:
         if auto_fallback_ssl and not insecure_ssl and "CERTIFICATE_VERIFY_FAILED" in str(e):
             html, final_url = _open_html(True)
@@ -196,8 +222,15 @@ def _fetch_likes_by_item_api(item_id: str, insecure_ssl: bool = False) -> int | 
 
 
 def fetch_likes(url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool = True) -> int:
+    # 短链 / 分享页用移动端 UA 首跳，减少 403（与 _request_text 内 403 重试互为补充）
+    prefer_mobile = (
+        os.getenv("DOUYIN_PREFER_MOBILE_UA", "1").strip() not in ("0", "false", "no")
+    )
     html, final_url = _request_text(
-        url, insecure_ssl=insecure_ssl, auto_fallback_ssl=auto_fallback_ssl
+        url,
+        insecure_ssl=insecure_ssl,
+        auto_fallback_ssl=auto_fallback_ssl,
+        mobile_ua=prefer_mobile,
     )
 
     normalized_final = final_url.rstrip("/")
