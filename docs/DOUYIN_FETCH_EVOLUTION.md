@@ -28,7 +28,8 @@ cd /home/ubuntu/jiankong/server
 source ../.venv-enterprise/bin/activate
 pip install playwright
 playwright install chromium
-playwright install-deps chromium   # 缺库时再执行
+# 云服务器「最小镜像」几乎必做：否则 Chromium 启动报缺 .so（见下方排错）
+sudo playwright install-deps chromium
 ```
 
 systemd 中增加：
@@ -38,6 +39,36 @@ Environment=DOUYIN_USE_PLAYWRIGHT=1
 ```
 
 然后 `daemon-reload` + `restart jiankong-api`。
+
+### 排错：`libatk-1.0.so.0` / `Target page, context or browser has been closed`
+
+日志或 `douyin_fetch_playwright.py --pw-child` 若出现：
+
+`error while loading shared libraries: libatk-1.0.so.0: cannot open shared object file`
+
+说明 **系统依赖未装全**（与 Python 代码无关）。在服务器执行：
+
+```bash
+cd /home/ubuntu/jiankong/server
+source ../.venv-enterprise/bin/activate
+sudo playwright install-deps chromium
+```
+
+若 `install-deps` 不可用或仍报错，可手动装 ATK（Ubuntu/Debian 示例）：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 \
+  libasound2t64 libasound2 libxcomposite1 libxdamage1 libxfixes3 libxrandr2
+```
+
+（部分发行版包名为 `libasound2` 而非 `libasound2t64`，以 `apt-cache search libasound` 为准。）
+
+装完后再次执行：
+
+`printf '%s' 'https://v.douyin.com/你的短链/' | python3 douyin_fetch_playwright.py --pw-child`
+
+应返回 `{"ok": true, "likes": ...}` 或解析类错误，而不应是 `libatk` / `exitCode=127`。
 
 ## 环境变量一览（与代码对齐）
 
