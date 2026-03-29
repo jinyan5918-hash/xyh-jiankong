@@ -1,0 +1,28 @@
+---
+description: 企业版 Windows 客户端发版须含「更新日志.txt」、版本号与命名规范
+globs: client/**,.github/workflows/build-enterprise-client.yml,build_enterprise_client.bat
+alwaysApply: false
+---
+
+# 客户端发版（必做清单）
+
+每次修改 `client/windows_client.py` 或发新版给员工打包时：
+
+1. **更新日志文件（必进 zip）**  
+   - 维护 `client/更新日志.txt`（文件名固定为这五个字）。  
+   - 内容须包含：**更新日期**、**版本号**、**本次更新内容**、**使用说明**。  
+   - 发版前必须 **提交到 Git**；并确认 **GitHub Actions** 与 **`build_enterprise_client.bat`** 会把该文件 **复制到 dist 输出目录**（与 exe 同目录）。
+
+2. **版本号三处一致**  
+   - `client/release_version.txt`（单行版本号，如 `1.2.0`）  
+   - `windows_client.py` 中的 `CLIENT_VERSION_FALLBACK`（与上一致）  
+   - `更新日志.txt` 中的版本号  
+
+3. **产物命名必须带版本号（勿回退）**  
+   - PyInstaller `--name EnterpriseDouyinClient-<版本号>`  
+   - GitHub Artifact 名：`EnterpriseDouyinClient-v<版本>-<短SHA>`（由工作流生成）  
+   - 窗口标题：`企业版抖音点赞监控客户端 v<版本号>`（由 `get_client_version()` 读取）
+
+4. **禁止**在未更新 `更新日志.txt` 与版本号文件的情况下，只改代码就打包分发。
+
+若用户只要求「打个包」，仍须提醒：是否已更新 `更新日志.txt` 与版本号三处。
