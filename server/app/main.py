@@ -232,7 +232,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     db.commit()
 
     token = create_access_token(user_id=user.id, device_id=payload.device_id)
-    return TokenResponse(access_token=token)
+    return TokenResponse(access_token=token, admin_role=role)
 
 
 @app.get("/tasks", response_model=list[TaskOut])

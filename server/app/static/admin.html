@@ -182,13 +182,20 @@
       t.className = "ok";
       t.textContent = "已登录";
       document.getElementById("appContent").style.display = "block";
-      const me = await fetch(API + "/admin/me", { headers: headers() });
-      if (me.ok) {
-        const m = await me.json();
-        adminRole = m.admin_role || "none";
-      } else {
-        adminRole = "none";
+      // 登录接口始终带 admin_role（main/tenant/none）；旧版 API 无该字段时再请求 /admin/me
+      let ar = data.admin_role;
+      if (ar !== "main" && ar !== "tenant") {
+        if (typeof ar !== "string" || ar === "") {
+          const me = await fetch(API + "/admin/me", { headers: headers() });
+          if (me.ok) {
+            const m = await me.json();
+            ar = m.admin_role || "none";
+          } else {
+            ar = "none";
+          }
+        }
       }
+      adminRole = ar === "main" || ar === "tenant" ? ar : "none";
       applyRoleUi();
       await loadUsers();
       await loadDevices();

@@ -13,6 +13,8 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    # 每次登录都返回，供 admin.html 判断主/超级管理员（避免依赖 GET /admin/me）
+    admin_role: str = "none"
 
 
 class UserCreate(BaseModel):
