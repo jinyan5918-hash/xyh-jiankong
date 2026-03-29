@@ -83,6 +83,8 @@ def _run_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN staff_group VARCHAR(64)"))
             # 旧库可能为 NULL，会导致登录时 count >= None 抛 TypeError → 500
             conn.execute(text("UPDATE users SET max_devices = 2 WHERE max_devices IS NULL"))
+            # admin_role 为 NULL 时，列表接口用 =='none'/'tenant' 会查不到任何行 → 后台用户表全空
+            conn.execute(text("UPDATE users SET admin_role = 'none' WHERE admin_role IS NULL"))
             conn.execute(text("UPDATE users SET admin_role = 'main' WHERE username = 'admin'"))
         if "devices" in insp.get_table_names():
             conn.execute(text("UPDATE devices SET is_active = 1 WHERE is_active IS NULL"))
@@ -137,11 +139,16 @@ def _require_main_admin(user: User) -> None:
         raise HTTPException(status_code=403, detail="仅主管理员可操作")
 
 
+def _sql_user_is_staff_employee():
+    """员工账号（含旧库 admin_role 为 NULL 的行）。"""
+    return or_(User.admin_role == "none", User.admin_role.is_(None))
+
+
 def _tenant_staff_ids(db: Session, tenant: User) -> list[int]:
     rows = (
         db.query(User.id)
         .filter(
-            User.admin_role == "none",
+            _sql_user_is_staff_employee(),
             User.created_by_admin_id == tenant.id,
         )
         .all()
@@ -643,7 +650,7 @@ def admin_meta(
 ):
     _require_admin_console(current_user)
     groups_q = db.query(User.staff_group).filter(
-        User.admin_role == "none",
+        _sql_user_is_staff_employee(),
         User.staff_group.isnot(None),
         User.staff_group != "",
     )
@@ -680,13 +687,13 @@ def admin_list_users(
     page_size = max(1, min(page_size, 100))
     q = db.query(User)
     if _is_main_admin(current_user):
-        q = q.filter(or_(User.admin_role == "tenant", User.admin_role == "none"))
+        q = q.filter(or_(User.admin_role == "tenant", _sql_user_is_staff_employee()))
         so = (staff_owner or "").strip().lower()
         if so == "unassigned":
             q = q.filter(
                 or_(
                     User.admin_role == "tenant",
-                    and_(User.admin_role == "none", User.created_by_admin_id.is_(None)),
+                    and_(_sql_user_is_staff_employee(), User.created_by_admin_id.is_(None)),
                 )
             )
         elif (sow := (staff_owner or "").strip()) and sow.isdigit():
@@ -694,12 +701,12 @@ def admin_list_users(
             q = q.filter(
                 or_(
                     and_(User.admin_role == "tenant", User.id == oid),
-                    and_(User.admin_role == "none", User.created_by_admin_id == oid),
+                    and_(_sql_user_is_staff_employee(), User.created_by_admin_id == oid),
                 )
             )
     else:
         q = q.filter(
-            User.admin_role == "none",
+            or_(User.admin_role == "none", User.admin_role.is_(None)),
             User.created_by_admin_id == current_user.id,
         )
     sg = (staff_group or "").strip()
@@ -707,7 +714,7 @@ def admin_list_users(
         q = q.filter(
             or_(
                 User.admin_role == "tenant",
-                and_(User.admin_role == "none", User.staff_group == sg),
+                and_(_sql_user_is_staff_employee(), User.staff_group == sg),
             )
         )
     q = _admin_user_search_filter(q, search)

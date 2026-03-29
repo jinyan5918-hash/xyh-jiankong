@@ -57,6 +57,7 @@
   <div id="tenantAdminCard" class="card" style="display:none;">
     <h2>超级管理员（仅登录本后台，不用客户端）</h2>
     <p class="muted">由主管理员为各部门经理开通；各自仅能管理自己创建的员工账号，数据与其它部门及主列表隔离。</p>
+    <p class="muted" style="font-size:13px;">已开通的超级管理员账号在下方「员工账号管理」表格中查看，类型列显示为「超级管理员」（本区域仅用于新开账号）。</p>
     <div class="row">
       <input id="taUsername" placeholder="登录名（≥3字符）" />
       <input id="taPassword" type="password" placeholder="初始密码（≥8位）" />
@@ -226,6 +227,14 @@
     function escapeHtml(s) {
       if (s == null || s === "") return "";
       return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+    }
+
+    /** 兼容旧版 API 直接返回数组；新版返回 { items, total } */
+    function unwrapPaged(body, itemsKey) {
+      if (Array.isArray(body)) {
+        return { items: body, total: body.length };
+      }
+      return { items: body[itemsKey] || [], total: body.total ?? 0 };
     }
 
     function applyRoleUi() {
@@ -448,10 +457,16 @@
       const sg = document.getElementById("filterStaffGroup").value.trim();
       if (sg) params.set("staff_group", sg);
       const r = await fetch(API + "/admin/users?" + params.toString(), { headers: headers() });
-      if (!r.ok) return;
+      if (!r.ok) {
+        const err = await r.text();
+        document.getElementById("userPageInfo").textContent = "加载失败 HTTP " + r.status;
+        alert("用户列表加载失败 (" + r.status + "): " + err);
+        return;
+      }
       const data = await r.json();
-      const users = data.items || [];
-      userListTotal = data.total || 0;
+      const up = unwrapPaged(data, "items");
+      const users = up.items;
+      userListTotal = up.total;
       const maxP = Math.max(1, Math.ceil(userListTotal / userPageSize));
       document.getElementById("userPageInfo").textContent =
         "第 " + userPage + " / " + maxP + " 页，共 " + userListTotal + " 条";
@@ -651,10 +666,16 @@
       const ds = document.getElementById("deviceSearch").value.trim();
       if (ds) params.set("search", ds);
       const r = await fetch(API + "/admin/devices?" + params.toString(), { headers: headers() });
-      if (!r.ok) return;
+      if (!r.ok) {
+        const err = await r.text();
+        document.getElementById("devicePageInfo").textContent = "加载失败 HTTP " + r.status;
+        alert("设备列表加载失败 (" + r.status + "): " + err);
+        return;
+      }
       const data = await r.json();
-      const devices = data.items || [];
-      deviceListTotal = data.total || 0;
+      const dp = unwrapPaged(data, "items");
+      const devices = dp.items;
+      deviceListTotal = dp.total;
       const maxP = Math.max(1, Math.ceil(deviceListTotal / devicePageSize));
       document.getElementById("devicePageInfo").textContent =
         "第 " + devicePage + " / " + maxP + " 页，共 " + deviceListTotal + " 条";
@@ -703,10 +724,16 @@
       if (success) params.set("success", success);
       if (hours) params.set("hours", hours);
       const r = await fetch(API + "/admin/records?" + params.toString(), { headers: headers() });
-      if (!r.ok) return;
+      if (!r.ok) {
+        const err = await r.text();
+        document.getElementById("recordPageInfo").textContent = "加载失败 HTTP " + r.status;
+        alert("检测记录加载失败 (" + r.status + "): " + err);
+        return;
+      }
       const data = await r.json();
-      const records = data.items || [];
-      recordListTotal = data.total || 0;
+      const rp = unwrapPaged(data, "items");
+      const records = rp.items;
+      recordListTotal = rp.total;
       const maxP = Math.max(1, Math.ceil(recordListTotal / recordPageSize));
       document.getElementById("recordPageInfo").textContent =
         "第 " + recordPage + " / " + maxP + " 页，共 " + recordListTotal + " 条";
