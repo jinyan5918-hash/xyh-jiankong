@@ -14,9 +14,20 @@ from .wecom import pick_webhook_for_user, push_reach_alert
 
 
 def _load_fetch_likes():
-    # 优先加载无 GUI 依赖模块（Linux 服务器无需 tkinter/requests）。
+    # 可通过 DOUYIN_USE_PLAYWRIGHT=1 启用真浏览器路径（见 docs/DOUYIN_FETCH_EVOLUTION.md）
     root = Path(__file__).resolve().parents[2]
-    for filename in ("douyin_fetch.py", "douyin_monitor_gui.py"):
+    use_pw = os.getenv("DOUYIN_USE_PLAYWRIGHT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    candidates = (
+        ("douyin_fetch_playwright.py", "douyin_fetch.py", "douyin_monitor_gui.py")
+        if use_pw
+        else ("douyin_fetch.py", "douyin_monitor_gui.py")
+    )
+    for filename in candidates:
         root_file = root / filename
         if not root_file.exists():
             continue
@@ -34,6 +45,30 @@ def _load_fetch_likes():
         fn = getattr(module, "fetch_likes", None)
         if fn is not None:
             return fn
+    # 声明了 Playwright 但加载失败时回退 HTTP，避免整站监控停摆
+    if use_pw:
+        for filename in ("douyin_fetch.py", "douyin_monitor_gui.py"):
+            root_file = root / filename
+            if not root_file.exists():
+                continue
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                root_file.stem, str(root_file)
+            )
+            if not spec or not spec.loader:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(module)
+            except Exception:
+                continue
+            fn = getattr(module, "fetch_likes", None)
+            if fn is not None:
+                print(
+                    "[scheduler] DOUYIN_USE_PLAYWRIGHT=1 但 Playwright 未就绪，已回退 douyin_fetch.py"
+                )
+                return fn
     return None
 
 
