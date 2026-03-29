@@ -29,15 +29,37 @@ try:
 except Exception:
     plyer_notification = None
 
-try:
-    import ctypes
-except ImportError:
-    ctypes = None
-
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.1"
+CLIENT_VERSION_FALLBACK = "1.2.3"
 
 PREFS_FILENAME = "user_prefs.json"
+
+# 柔和浅紫粉系界面（易读、不刺眼）；Windows 下配合 clam 主题上色
+_THEME = {
+    "bg": "#f7f2fb",
+    "fg": "#4c3d5a",
+    "muted": "#8e7f9e",
+    "warn": "#b5657c",
+    "accent": "#8b6cb3",
+    "card": "#ffffff",
+    "tree_sel_bg": "#eadcf7",
+    "tree_sel_fg": "#3d2f4d",
+    "hl_row": "#f5ebff",
+    "btn_bg": "#e8dff5",
+    "btn_active": "#dcc9f0",
+    "btn_pressed": "#cab5e6",
+    "btn_fg": "#453459",
+}
+
+
+def _ui_font(size: int = 10, bold: bool = False) -> tuple:
+    if sys.platform == "win32":
+        family = "Microsoft YaHei UI"
+    elif sys.platform == "darwin":
+        family = "PingFang SC"
+    else:
+        family = "DejaVu Sans"
+    return (family, size, "bold") if bold else (family, size)
 
 
 def _app_dir() -> Path:
@@ -182,6 +204,10 @@ class App:
         self.api_base = api_base.rstrip("/")
         self.root.title(f"企业版抖音点赞监控客户端 v{get_client_version()}")
         self.root.geometry("1100x880")
+        try:
+            self.root.configure(background=_THEME["bg"])
+        except Exception:
+            pass
         self.token = None
         self._seen_alert_ids: set[int] = set()
         self._last_log_lines: list[str] = []
@@ -208,41 +234,112 @@ class App:
         self.root.after(10000, self._tick_alerts)
 
     def _apply_styles(self) -> None:
+        self.tree_tag_highlight = "hlrow"
         style = ttk.Style()
+        T = _THEME
         try:
-            style.configure("Treeview", rowheight=22)
-            self.tree_tag_highlight = "hlrow"
+            if sys.platform == "win32":
+                style.theme_use("clam")
+        except Exception:
+            pass
+        try:
+            style.configure(".", background=T["bg"], foreground=T["fg"])
+            style.configure("TFrame", background=T["bg"])
+            style.configure("TLabel", background=T["bg"], foreground=T["fg"], font=_ui_font(10))
+            style.configure("TLabelframe", background=T["bg"], relief="solid", borderwidth=1)
+            style.configure(
+                "TLabelframe.Label",
+                background=T["bg"],
+                foreground=T["accent"],
+                font=_ui_font(10, True),
+            )
+            style.configure(
+                "TEntry",
+                fieldbackground=T["card"],
+                insertcolor=T["fg"],
+                font=_ui_font(10),
+            )
+            style.configure(
+                "TButton",
+                padding=(14, 6),
+                font=_ui_font(10),
+                background=T["btn_bg"],
+                foreground=T["btn_fg"],
+                borderwidth=0,
+                focuscolor=T["bg"],
+            )
+            style.map(
+                "TButton",
+                background=[
+                    ("active", T["btn_active"]),
+                    ("pressed", T["btn_pressed"]),
+                ],
+            )
+            style.configure(
+                "Treeview",
+                rowheight=26,
+                background=T["card"],
+                fieldbackground=T["card"],
+                foreground=T["fg"],
+                font=_ui_font(10),
+            )
             style.map(
                 "Treeview",
-                background=[("selected", "#3474eb")],
-                foreground=[("selected", "white")],
+                background=[("selected", T["tree_sel_bg"])],
+                foreground=[("selected", T["tree_sel_fg"])],
+            )
+            style.configure(
+                "Treeview.Heading",
+                font=_ui_font(10, True),
+                background=T["btn_bg"],
+                foreground=T["btn_fg"],
             )
         except Exception:
-            self.tree_tag_highlight = "hlrow"
+            pass
 
     def _build_welcome(self) -> None:
         self._welcome_fr = ttk.Frame(self.root)
-        inner = ttk.Frame(self._welcome_fr, padding=48)
+        inner = ttk.Frame(self._welcome_fr, padding=52)
         inner.place(relx=0.5, rely=0.45, anchor="center")
         ttk.Label(
             inner,
-            text="星与海/创左内部使用，泄露追责",
-            font=("TkDefaultFont", 15, "bold"),
-            foreground="#b00020",
+            text="欢迎使用",
+            font=_ui_font(13),
+            foreground=_THEME["accent"],
+            justify="center",
+        ).pack(pady=(0, 6))
+        ttk.Label(
+            inner,
+            text="企业版抖音点赞监控客户端",
+            font=_ui_font(14, True),
+            foreground=_THEME["fg"],
+            justify="center",
+        ).pack()
+        ttk.Label(
+            inner,
+            text=f"版本 v{get_client_version()} · 界面清爽好用，祝工作顺利",
+            font=_ui_font(10),
+            foreground=_THEME["muted"],
             wraplength=520,
             justify="center",
-        ).pack(pady=(0, 28))
-        ttk.Label(inner, text="企业版抖音点赞监控客户端", font=("TkDefaultFont", 12)).pack()
-        ttk.Label(inner, text=f"v{get_client_version()}", foreground="#666").pack(pady=(4, 22))
+        ).pack(pady=(8, 20))
+        ttk.Label(
+            inner,
+            text="星与海/创左内部使用，泄露追责",
+            font=_ui_font(11, True),
+            foreground=_THEME["warn"],
+            wraplength=520,
+            justify="center",
+        ).pack(pady=(0, 24))
         row1 = ttk.Frame(inner)
-        row1.pack(fill="x", pady=6)
+        row1.pack(fill="x", pady=8)
         ttk.Label(row1, text="账号", width=6).pack(side="left")
-        ttk.Entry(row1, textvariable=self.username_var, width=26).pack(side="left", padx=(10, 0))
+        ttk.Entry(row1, textvariable=self.username_var, width=28).pack(side="left", padx=(12, 0))
         row2 = ttk.Frame(inner)
-        row2.pack(fill="x", pady=6)
+        row2.pack(fill="x", pady=8)
         ttk.Label(row2, text="密码", width=6).pack(side="left")
-        ttk.Entry(row2, textvariable=self.password_var, show="*", width=26).pack(side="left", padx=(10, 0))
-        ttk.Button(inner, text="登录", command=self.login).pack(pady=(24, 0))
+        ttk.Entry(row2, textvariable=self.password_var, show="*", width=28).pack(side="left", padx=(12, 0))
+        ttk.Button(inner, text="登录", command=self.login).pack(pady=(28, 0))
         self._welcome_fr.pack(fill="both", expand=True)
 
     def _build_main(self) -> None:
@@ -252,7 +349,7 @@ class App:
         self.wecom_gate_label = ttk.Label(
             self._main_fr,
             text="",
-            foreground="#b00020",
+            foreground=_THEME["warn"],
             wraplength=1040,
             justify="left",
         )
@@ -356,9 +453,17 @@ class App:
         self.tree.bind("<ButtonRelease-3>", self._tree_context_menu)
         if sys.platform == "darwin":
             self.tree.bind("<ButtonRelease-2>", self._tree_context_menu)
-        self.tree.tag_configure(self.tree_tag_highlight, background="#a8d5ff")
+        self.tree.tag_configure(self.tree_tag_highlight, background=_THEME["hl_row"])
 
-        self._ctx_menu = tk.Menu(self.root, tearoff=0)
+        self._ctx_menu = tk.Menu(
+            self.root,
+            tearoff=0,
+            bg=_THEME["card"],
+            fg=_THEME["fg"],
+            activebackground=_THEME["tree_sel_bg"],
+            activeforeground=_THEME["tree_sel_fg"],
+            relief="flat",
+        )
         self._ctx_menu.add_command(label="复制视频链接", command=self._ctx_copy_url)
         self._ctx_menu.add_command(label="在浏览器中打开链接", command=self._ctx_open_url)
 
@@ -368,7 +473,22 @@ class App:
             padding=(8, 4),
         )
         log_fr.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-        self.log_text = scrolledtext.ScrolledText(log_fr, height=9, state="disabled", wrap="word")
+        self.log_text = scrolledtext.ScrolledText(
+            log_fr,
+            height=9,
+            state="disabled",
+            wrap="word",
+            font=_ui_font(9),
+            bg=_THEME["card"],
+            fg=_THEME["fg"],
+            insertbackground=_THEME["fg"],
+            selectbackground=_THEME["tree_sel_bg"],
+            selectforeground=_THEME["tree_sel_fg"],
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=_THEME["btn_active"],
+            highlightcolor=_THEME["accent"],
+        )
         self.log_text.pack(fill="both", expand=True)
 
         bottom = ttk.Frame(self._main_fr, padding=(12, 0, 12, 12))
@@ -432,14 +552,15 @@ class App:
         self._wecom_blocked = bool(blocked)
         if self._wecom_blocked:
             self.wecom_gate_label.configure(
+                foreground=_THEME["warn"],
                 text=(
-                    "【未配置企业微信 Webhook】任务列表、监控、日志等功能已锁定。"
-                    "若管理员已在后台为您填写，请点「保存企业微信通知」同步；"
-                    "否则请在下方粘贴 Webhook 后保存。"
+                    "【温馨提示】尚未配置企业微信 Webhook，任务与监控暂时不可用。"
+                    "若管理员已在后台为您填好，请点击「保存企业微信通知」同步；"
+                    "也可在下方粘贴 Webhook 后保存。"
                 ),
             )
         else:
-            self.wecom_gate_label.configure(text="")
+            self.wecom_gate_label.configure(text="", foreground=_THEME["muted"])
         st = "disabled" if self._wecom_blocked else "normal"
         for w in self._widgets_need_wecom:
             try:
@@ -448,24 +569,6 @@ class App:
                     continue
                 w.configure(state=st)
             except tk.TclError:
-                pass
-
-    def _bring_to_front(self) -> None:
-        try:
-            self.root.deiconify()
-            self.root.state("normal")
-        except Exception:
-            pass
-        self.root.lift()
-        self.root.attributes("-topmost", True)
-        self.root.after(400, lambda: self.root.attributes("-topmost", False))
-        self.root.focus_force()
-        if sys.platform == "win32" and ctypes:
-            try:
-                hwnd = self.root.winfo_id()
-                ctypes.windll.user32.ShowWindow(hwnd, 9)
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
-            except Exception:
                 pass
 
     def _highlight_task(self, task_id: int) -> None:
@@ -817,7 +920,7 @@ class App:
                             f"任务 #{tid}「{tname}」\n"
                             f"当前点赞 {likes} ，目标 {target} （已达到或超过）\n"
                             f"链接：{url_short or '（请在列表中查看）'}\n"
-                            f"主窗口将自动打开并高亮该任务。"
+                            f"打开本客户端窗口时可在列表中看到该任务已高亮。"
                         )
                         play_notice_sound()
                         self.root.after(0, lambda tid=tid: self._on_reach_alert(tid))
@@ -832,7 +935,6 @@ class App:
         self.root.after(10000, self._tick_alerts)
 
     def _on_reach_alert(self, task_id: int) -> None:
-        self._bring_to_front()
         self._highlight_task(task_id)
 
     def refresh_tasks(self):
