@@ -19,12 +19,15 @@ class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=8, max_length=128)
     max_devices: int = Field(default=2, ge=1, le=10)
+    # 新员工必填：企业微信群机器人 Webhook（一对一通知到该员工所在群）
+    wecom_webhook_url: str = Field(min_length=20, max_length=1024)
 
 
 class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=8, max_length=128)
     max_devices: int | None = Field(default=None, ge=1, le=10)
     is_active: bool | None = None
+    wecom_webhook_url: str | None = Field(default=None, max_length=1024)
 
 
 class UserOut(BaseModel):
@@ -32,6 +35,7 @@ class UserOut(BaseModel):
     username: str
     max_devices: int
     is_active: bool
+    wecom_webhook_url: str | None = None
 
     class Config:
         from_attributes = True
@@ -116,6 +120,20 @@ class ReachAlertOut(BaseModel):
     likes: int
     target_likes: int
     created_at: datetime
+    video_url: str | None = None
 
     class Config:
         from_attributes = True
+
+
+class UserNotifySettingsOut(BaseModel):
+    """企业微信等通知配置（仅本人可见）。"""
+
+    wecom_webhook_url: str | None = None
+    wecom_configured: bool = False
+    # 非 admin 账号未配置 Webhook 时客户端应锁定任务/监控等操作
+    block_operations_until_wecom: bool = False
+
+
+class UserNotifySettingsPatch(BaseModel):
+    wecom_webhook_url: str | None = Field(default=None, max_length=1024)

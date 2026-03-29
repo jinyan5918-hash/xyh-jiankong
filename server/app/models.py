@@ -21,6 +21,8 @@ class User(Base):
     # 为空则使用服务端全局 SCHED_INTERVAL_* 环境变量。
     interval_min_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
     interval_max_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 企业微信群机器人 Webhook，达标时服务端推送（手机企业微信可见）。
+    wecom_webhook_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     devices: Mapped[list["Device"]] = relationship(back_populates="user")
     monitor_tasks: Mapped[list["MonitorTask"]] = relationship(back_populates="user")
@@ -53,7 +55,10 @@ class MonitorTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     user: Mapped["User"] = relationship(back_populates="monitor_tasks")
-    records: Mapped[list["MonitorRecord"]] = relationship(back_populates="task")
+    records: Mapped[list["MonitorRecord"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
 
 
 class MonitorRecord(Base):
