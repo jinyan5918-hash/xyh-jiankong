@@ -6,22 +6,25 @@
 可选：DOUYIN_COOKIE（整段 Cookie 头）、DOUYIN_PLAYWRIGHT_PROXY（单条代理 URL）
 
 与 douyin_fetch.py 相同签名，供调度器按环境变量择优加载。
+
+注意：Uvicorn/FastAPI 运行在 asyncio 事件循环上，Playwright Sync API 不能在同进程同线程使用。
+因此对外入口 fetch_likes 通过子进程调用本文件 --pw-child，在「无 asyncio」的纯净进程里跑 Sync API。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 DIGG_PATTERN = re.compile(r'"digg_count"\s*:\s*(\d+)')
-VIDEO_ID_PATTERNS = [
-    re.compile(r"/video/(\d+)"),
-    re.compile(r'"aweme_id"\s*:\s*"(\d+)"'),
-]
 
 _lock = threading.Lock()
 _playwright: Any = None
@@ -62,9 +65,8 @@ def _extract_likes_from_html(html: str) -> int | None:
     return max(int(x) for x in matches)
 
 
-def fetch_likes(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = True) -> int:
-    del insecure_ssl, auto_fallback_ssl  # Playwright 自行校验证书；需忽略时可改 ignore_https_errors
-
+def _impl_fetch_in_child_process(url: str) -> int:
+    """仅在子进程中调用（无 asyncio loop）。"""
     _ensure_browser()
     cookie_header = os.getenv("DOUYIN_COOKIE", "").strip()
 
@@ -88,7 +90,6 @@ def fetch_likes(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = T
 
     page = context.new_page()
     try:
-        # 人类化间隔，降低请求节奏特征（秒级随机）
         time.sleep(random.uniform(0.8, 2.8))
         page.goto(url, wait_until="domcontentloaded", timeout=90_000)
         time.sleep(random.uniform(0.5, 1.5))
@@ -96,7 +97,6 @@ def fetch_likes(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = T
         likes = _extract_likes_from_html(html)
         if likes is not None:
             return likes
-        # 再等一等异步注入的 JSON
         page.wait_for_timeout(3000)
         html = page.content()
         likes = _extract_likes_from_html(html)
@@ -106,3 +106,51 @@ def fetch_likes(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = T
     finally:
         page.close()
         context.close()
+
+
+def fetch_likes(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = True) -> int:
+    del insecure_ssl, auto_fallback_ssl
+    script = Path(__file__).resolve()
+    # 用 stdin 传 URL，避免 shell/argv 对 &、中文等特殊字符出问题
+    r = subprocess.run(
+        [sys.executable, str(script), "--pw-child"],
+        input=url,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=os.environ.copy(),
+        cwd=str(script.parent),
+    )
+    out = (r.stdout or "").strip()
+    err = (r.stderr or "").strip()
+    line = out.splitlines()[-1] if out else ""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"Playwright 子进程输出无法解析: {line!r} stderr={err!r} code={r.returncode}"
+        ) from e
+    if not data.get("ok"):
+        raise ValueError(data.get("error") or "Playwright 子进程失败")
+    return int(data["likes"])
+
+
+def _main_child() -> None:
+    url = sys.stdin.read().strip()
+    if not url:
+        print(json.dumps({"ok": False, "error": "empty url"}))
+        sys.exit(1)
+    try:
+        n = _impl_fetch_in_child_process(url)
+        print(json.dumps({"ok": True, "likes": n}))
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--pw-child":
+        _main_child()
+    else:
+        sys.stderr.write("Use: python douyin_fetch_playwright.py --pw-child <stdin url>\n")
+        sys.exit(2)

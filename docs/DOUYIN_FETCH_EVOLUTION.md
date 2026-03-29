@@ -8,7 +8,7 @@
 
 | 层级 | 手段 | 作用 |
 |------|------|------|
-| **S** | Playwright + 真 Chromium（`DOUYIN_USE_PLAYWRIGHT=1`） | TLS/JS/渲染与真实用户最接近，机房纯 HTTP 403 时优先试 |
+| **S** | Playwright + 真 Chromium（`DOUYIN_USE_PLAYWRIGHT=1`） | TLS/JS/渲染与真实用户最接近；实现上在**独立子进程**跑 Sync API，避免与 Uvicorn 的 asyncio 冲突 |
 | **A** | 住宅/移动网出口代理（`DOUYIN_PROXY_POOL` / `DOUYIN_PLAYWRIGHT_PROXY`） | 换 ASN 与 IP 信誉，对抗机房 IP 黑名单 |
 | **B** | 高活 Cookie（`DOUYIN_COOKIE`） | 复用已建立的风控会话；需定期更换 |
 | **C** | UA/Referer/移动端首跳、403 自动换 UA（`douyin_fetch.py`） | 低成本基线，易被封仍值得保留作 fallback |
