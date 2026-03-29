@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.4"
+CLIENT_VERSION_FALLBACK = "1.2.5"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -405,6 +405,7 @@ class App:
 
         self._ctx_menu = None
         self._welcome_fr: tk.Frame | None = None
+        self._welcome_version_label: ttk.Label | None = None
         self._welcome_canvas: tk.Canvas | None = None
         self._main_top_canvas: tk.Canvas | None = None
         self._main_fr: ttk.Frame | None = None
@@ -504,47 +505,58 @@ class App:
         self._welcome_canvas.pack(fill=tk.X)
         self._welcome_canvas.bind("<Configure>", self._on_welcome_canvas_configure)
 
-        inner = ttk.Frame(self._welcome_fr, padding=(40, 28, 40, 44))
+        self._welcome_version_label = ttk.Label(
+            self._welcome_fr,
+            text=f"版本 v{get_client_version()}",
+            font=_ui_font(9),
+            foreground="#9a8caf",
+        )
+        self._welcome_version_label.place(relx=1.0, rely=1.0, anchor="se", x=-18, y=-16)
+
+        inner = ttk.Frame(self._welcome_fr, padding=(40, 12, 40, 52))
         inner.pack(fill="both", expand=True)
+        shell = ttk.Frame(inner)
+        shell.pack(fill="both", expand=True)
+        shell.columnconfigure(0, weight=1)
+        shell.columnconfigure(1, weight=0)
+        shell.columnconfigure(2, weight=1)
+        mid = ttk.Frame(shell)
+        mid.grid(row=0, column=1, sticky="n", pady=(4, 0))
+
+        text_stack = ttk.Frame(mid)
+        text_stack.pack(pady=(0, 6))
         ttk.Label(
-            inner,
-            text="系统已为你开启好运模式～",
-            font=_ui_font(13, True),
-            foreground=_THEME["accent"],
-            justify="center",
-        ).pack(pady=(0, 6))
-        ttk.Label(
-            inner,
+            text_stack,
             text="企业版抖音点赞监控客户端",
-            font=_ui_font(14, True),
-            foreground=_THEME["fg"],
+            font=_ui_font(11),
+            foreground="#6f5f82",
             justify="center",
-        ).pack()
+        ).pack(anchor="center")
         ttk.Label(
-            inner,
-            text=f"版本 v{get_client_version()} · 界面清爽好用，祝工作顺利",
-            font=_ui_font(10),
-            foreground=_THEME["muted"],
-            wraplength=520,
+            text_stack,
+            text="系统已为你开启好运模式～",
+            font=_ui_font(17, True),
+            foreground="#7d5fa8",
             justify="center",
-        ).pack(pady=(8, 20))
+        ).pack(pady=(16, 0), anchor="center")
         ttk.Label(
-            inner,
-            text="星与海/创左内部使用，泄露追责",
-            font=_ui_font(11, True),
-            foreground=_THEME["warn"],
-            wraplength=520,
+            text_stack,
+            text="星与海/创左内部使用，泄漏追责",
+            font=_ui_font(9),
+            foreground="#b07888",
+            wraplength=420,
             justify="center",
-        ).pack(pady=(0, 24))
-        row1 = ttk.Frame(inner)
-        row1.pack(fill="x", pady=8)
+        ).pack(pady=(20, 0), anchor="center")
+
+        row1 = ttk.Frame(mid)
+        row1.pack(fill="x", pady=(26, 8))
         ttk.Label(row1, text="账号", width=6).pack(side="left")
         ttk.Entry(row1, textvariable=self.username_var, width=28).pack(side="left", padx=(12, 0))
-        row2 = ttk.Frame(inner)
+        row2 = ttk.Frame(mid)
         row2.pack(fill="x", pady=8)
         ttk.Label(row2, text="密码", width=6).pack(side="left")
         ttk.Entry(row2, textvariable=self.password_var, show="*", width=28).pack(side="left", padx=(12, 0))
-        ttk.Button(inner, text="登录", command=self.login).pack(pady=(28, 0))
+        ttk.Button(mid, text="登录", command=self.login).pack(pady=(22, 0))
         self._welcome_fr.pack(fill="both", expand=True)
 
     def _build_main(self) -> None:
