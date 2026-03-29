@@ -13,6 +13,7 @@ client/_build_config.json
 config.json
 Token*.txt
 .playwright-browsers/
+.douyin_playwright_subprocess.lock
 
 # 本地 Mac 应用包（体积大，与 Windows 客户端 CI 无关）
 *.app/
