@@ -10,7 +10,9 @@ alwaysApply: true
 
 - **助手（你）**：在用户提出「发版 / 打包 / 新版本 / 给员工客户端 / bump 版本」或**任何会导致需要新 zip 分发的客户端改动**时，**默认由你完成**下列操作，**不要**让用户「记住四件事」或自己去改文件。  
 - **硬性规定**：凡修改了 **`client/` 目录下任意文件**（哪怕一行文案、一个颜色、一个 bugfix），**必须**在同一提交或紧随其后的提交里 **递增 `release_version.txt` 的补丁位**（如 1.2.3→1.2.4），并同步 **`CLIENT_VERSION_FALLBACK`** 与 **`client/更新日志.txt`**。不得仅改代码而不改版本号。  
-- **用户**：仅在助手**无法**完成网络 `git push`、或仓库未配置 `gh` CLI 时，才需要 **点一次** GitHub Actions「Run workflow」；除此之外尽量不增加用户操作。
+- **自动提交与推送（最重要）**：只要 **助手在本轮任务中编辑、创建或删除了 `client/` 下任何文件**，在**结束回复用户之前**，助手**必须亲自执行**（除非用户明确说「不要提交 / 不要 push」）：`git add`（含本次所有 client 改动及同步的 `更新日志`/规则若有）→ `git commit`（中文说明含版本号）→ **`git push origin main`**。不得把「请你记得 push」甩给用户；`push` 失败时须在回复里说明原因并给出可复制的一条命令，但助手须**已尝试过** push。  
+  - *说明*：助手无法在你**未发起对话**时后台自动跑 Git；但在「你让助手改客户端」的同一次对话里，助手应**默认替你做完 commit+push**，这样你再去点 Actions 才不会打到旧版本。  
+- **用户**：仅在助手**无法**完成网络 `git push` 时，才需在本机终端补一次 `git push`；GitHub Actions 仍需用户在网页上 **Run workflow**（助手可顺带尝试 `gh workflow run`，非必须）。
 
 ## 助手必须执行的步骤（按顺序）
 
@@ -23,8 +25,8 @@ alwaysApply: true
    - `client/windows_client.py` 顶部的 `CLIENT_VERSION_FALLBACK`  
    - `更新日志.txt` 内的版本号  
 
-3. **Git**  
-   - `git add` 相关文件 → `git commit`（清晰中文说明）→ **尝试** `git push`（有权限则必须执行）。
+3. **Git（与上节「自动提交与推送」一致，不得省略）**  
+   - `git add` 相关文件 → `git commit`（清晰中文说明，含版本号）→ **`git push origin main`**（必须执行；失败则已尝试并告知用户）。
 
 4. **云端打包**  
    - 若环境有 `gh` 且已登录：可 `gh workflow run` 触发 **Build Enterprise Windows Client**。  
@@ -33,6 +35,7 @@ alwaysApply: true
 ## 禁止
 
 - 禁止回复「请你记住去改更新日志和版本号」这类把维护责任推给用户的话。  
+- **禁止**在助手已修改 `client/` 后，以「改完了」收尾却**不执行** `git commit` + **`git push origin main`**（用户已明确禁止提交时除外）。  
 - 禁止在未改 `更新日志.txt` 与三处版本号的情况下，声称客户端已可发版。  
 - **禁止**去掉或绕开「exe / 文件夹名带版本号」的打包方式（`build_enterprise_client.bat` 与 workflow 已约定）。
 
