@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.3"
+CLIENT_VERSION_FALLBACK = "1.2.4"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -50,6 +50,185 @@ _THEME = {
     "btn_pressed": "#cab5e6",
     "btn_fg": "#453459",
 }
+
+# 登录页 / 主界面顶部装饰（粉嫩海浪 + 简笔小猫），纯 Canvas 绘制、无外部图片
+_DECO = {
+    "sky_top": "#fff5fb",
+    "sky_mid": "#fce8f3",
+    "sky_low": "#e8d4f0",
+    "wave_a": "#b3e5fc",
+    "wave_b": "#f8bbd9",
+    "wave_c": "#d1c4e9",
+    "foam": "#ffffff",
+    "kitty_face": "#fff8fc",
+    "kitty_ear": "#ffc2d4",
+    "kitty_bow": "#ff5ca8",
+    "kitty_bow_dark": "#e91e8c",
+    "star": "#ffd54f",
+    "cloud": "#ffffff",
+}
+
+
+def _deco_wave_polygon(
+    w: int,
+    h: int,
+    y_base: float,
+    amplitude: float,
+    wavelength: float,
+    phase: float,
+) -> list[float]:
+    import math
+
+    pts: list[float] = []
+    step = max(6, w // 64)
+    x = 0.0
+    while x <= w + step:
+        y = y_base + amplitude * math.sin((x / max(wavelength, 1.0)) * 2 * math.pi + phase)
+        pts.extend([x, y])
+        x += step
+    pts.extend([float(w), float(h), 0.0, float(h)])
+    return pts
+
+
+def _paint_login_deco(canvas: tk.Canvas, w: int, h: int) -> None:
+    import math
+
+    canvas.delete("deco")
+    tag = "deco"
+    w = max(w, 2)
+    h = max(h, 2)
+    canvas.create_rectangle(0, 0, w, h // 2, fill=_DECO["sky_top"], outline="", tags=tag)
+    canvas.create_rectangle(0, h // 2, w, h, fill=_DECO["sky_mid"], outline="", tags=tag)
+    for cx, cy, r in [(w * 0.12, h * 0.22, 28), (w * 0.22, h * 0.28, 20), (w * 0.78, h * 0.18, 24)]:
+        canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=_DECO["cloud"], outline="#f5e6ef", tags=tag)
+    for sx, sy in [(w * 0.08, h * 0.12), (w * 0.88, h * 0.1), (w * 0.5, h * 0.08)]:
+        canvas.create_text(sx, sy, text="✦", fill=_DECO["star"], font=("Segoe UI Symbol", 14), tags=tag)
+    y_sea = h * 0.52
+    canvas.create_polygon(
+        _deco_wave_polygon(w, h, y_sea, 14.0, w * 0.45, 0.0),
+        fill=_DECO["wave_a"],
+        outline="",
+        tags=tag,
+    )
+    canvas.create_polygon(
+        _deco_wave_polygon(w, h, y_sea + 18.0, 11.0, w * 0.38, 1.2),
+        fill=_DECO["wave_b"],
+        outline="",
+        tags=tag,
+    )
+    canvas.create_polygon(
+        _deco_wave_polygon(w, h, y_sea + 32.0, 9.0, w * 0.5, 2.4),
+        fill=_DECO["wave_c"],
+        outline="",
+        tags=tag,
+    )
+    foam_y = y_sea + 8.0
+    for fx in range(-20, w + 40, 55):
+        fy = foam_y + 6 * math.sin(fx * 0.08)
+        canvas.create_oval(fx, fy, fx + 14, fy + 6, fill=_DECO["foam"], outline="", tags=tag)
+    kx, ky = w * 0.72, h * 0.36
+    s = min(w / 520.0, h / 220.0, 1.15)
+    s = max(s, 0.75)
+    rxf, ryf = 46 * s, 40 * s
+    canvas.create_polygon(
+        kx - 38 * s,
+        ky - 22 * s,
+        kx - 14 * s,
+        ky - 50 * s,
+        kx + 8 * s,
+        ky - 26 * s,
+        fill=_DECO["kitty_ear"],
+        outline="#f48fb1",
+        width=2,
+        tags=tag,
+    )
+    canvas.create_polygon(
+        kx + 38 * s,
+        ky - 22 * s,
+        kx + 14 * s,
+        ky - 50 * s,
+        kx - 8 * s,
+        ky - 26 * s,
+        fill=_DECO["kitty_ear"],
+        outline="#f48fb1",
+        width=2,
+        tags=tag,
+    )
+    canvas.create_oval(
+        kx - rxf,
+        ky - ryf,
+        kx + rxf,
+        ky + ryf,
+        fill=_DECO["kitty_face"],
+        outline="#ffb6c1",
+        width=2,
+        tags=tag,
+    )
+    canvas.create_oval(kx - rxf - 32 * s, ky - 46 * s, kx - rxf - 8 * s, ky - 22 * s, fill=_DECO["kitty_bow"], outline="", tags=tag)
+    canvas.create_oval(kx - rxf - 22 * s, ky - 50 * s, kx + 2 * s, ky - 26 * s, fill=_DECO["kitty_bow"], outline="", tags=tag)
+    canvas.create_oval(kx - rxf - 18 * s, ky - 40 * s, kx - rxf + 2 * s, ky - 24 * s, fill=_DECO["kitty_bow_dark"], outline="", tags=tag)
+    eye_dx = 16 * s
+    for ex in (kx - eye_dx, kx + eye_dx):
+        canvas.create_oval(ex - 5 * s, ky - 8 * s, ex + 5 * s, ky + 4 * s, fill="#4a3728", outline="", tags=tag)
+        canvas.create_oval(ex - 2 * s, ky - 5 * s, ex + 1 * s, ky - 2 * s, fill="#ffffff", outline="", tags=tag)
+    canvas.create_polygon(
+        kx,
+        ky + 6 * s,
+        kx - 5 * s,
+        ky + 14 * s,
+        kx + 5 * s,
+        ky + 14 * s,
+        fill="#ff8fab",
+        outline="",
+        tags=tag,
+    )
+    for sign in (-1, 1):
+        canvas.create_line(
+            kx + sign * 12 * s,
+            ky + 4 * s,
+            kx + sign * 38 * s,
+            ky + 2 * s,
+            fill="#c9b8c8",
+            width=1,
+            tags=tag,
+        )
+        canvas.create_line(
+            kx + sign * 12 * s,
+            ky + 10 * s,
+            kx + sign * 36 * s,
+            ky + 10 * s,
+            fill="#c9b8c8",
+            width=1,
+            tags=tag,
+        )
+
+
+def _paint_main_strip_deco(canvas: tk.Canvas, w: int, h: int) -> None:
+    canvas.delete("deco")
+    tag = "deco"
+    w = max(w, 2)
+    h = max(h, 2)
+    canvas.create_rectangle(0, 0, w, h, fill=_THEME["bg"], outline="", tags=tag)
+    y0 = h * 0.35
+    canvas.create_polygon(
+        _deco_wave_polygon(w, h, y0, 5.0, w * 0.35, 0.5),
+        fill=_DECO["wave_a"],
+        outline="",
+        tags=tag,
+    )
+    canvas.create_polygon(
+        _deco_wave_polygon(w, h, y0 + 8.0, 4.0, w * 0.28, 1.8),
+        fill=_DECO["wave_b"],
+        outline="",
+        tags=tag,
+    )
+    kx, ky = w - 36, h * 0.48
+    ss = min(h / 56.0, 1.0) * 0.55
+    canvas.create_oval(kx - 18 * ss, ky - 16 * ss, kx + 18 * ss, ky + 14 * ss, fill=_DECO["kitty_face"], outline="#ffb6c1", width=1, tags=tag)
+    canvas.create_oval(kx - 8 * ss, ky - 4 * ss, kx - 2 * ss, ky + 2 * ss, fill="#4a3728", outline="", tags=tag)
+    canvas.create_oval(kx + 2 * ss, ky - 4 * ss, kx + 8 * ss, ky + 2 * ss, fill="#4a3728", outline="", tags=tag)
+    canvas.create_text(w * 0.04, h * 0.5, text="✿", fill=_DECO["kitty_bow"], font=("Segoe UI Symbol", 12), tags=tag)
+    canvas.create_text(w * 0.12, h * 0.45, text="～", fill=_DECO["wave_b"], font=_ui_font(11), tags=tag)
 
 
 def _ui_font(size: int = 10, bold: bool = False) -> tuple:
@@ -225,7 +404,9 @@ class App:
         self._widgets_need_wecom: list[tk.Widget] = []
 
         self._ctx_menu = None
-        self._welcome_fr: ttk.Frame | None = None
+        self._welcome_fr: tk.Frame | None = None
+        self._welcome_canvas: tk.Canvas | None = None
+        self._main_top_canvas: tk.Canvas | None = None
         self._main_fr: ttk.Frame | None = None
         self._apply_styles()
         self._build_welcome()
@@ -297,14 +478,38 @@ class App:
         except Exception:
             pass
 
+    def _on_welcome_canvas_configure(self, event):
+        if self._welcome_canvas is None or event.widget is not self._welcome_canvas:
+            return
+        w = max(event.width, 2)
+        h = max(event.height, 2)
+        _paint_login_deco(self._welcome_canvas, w, h)
+
+    def _on_main_top_canvas_configure(self, event):
+        if self._main_top_canvas is None or event.widget is not self._main_top_canvas:
+            return
+        w = max(event.width, 2)
+        h = max(event.height, 2)
+        _paint_main_strip_deco(self._main_top_canvas, w, h)
+
     def _build_welcome(self) -> None:
-        self._welcome_fr = ttk.Frame(self.root)
-        inner = ttk.Frame(self._welcome_fr, padding=52)
-        inner.place(relx=0.5, rely=0.45, anchor="center")
+        self._welcome_fr = tk.Frame(self.root, bg=_THEME["bg"])
+        self._welcome_canvas = tk.Canvas(
+            self._welcome_fr,
+            height=220,
+            highlightthickness=0,
+            bd=0,
+            bg=_DECO["sky_top"],
+        )
+        self._welcome_canvas.pack(fill=tk.X)
+        self._welcome_canvas.bind("<Configure>", self._on_welcome_canvas_configure)
+
+        inner = ttk.Frame(self._welcome_fr, padding=(40, 28, 40, 44))
+        inner.pack(fill="both", expand=True)
         ttk.Label(
             inner,
-            text="欢迎使用",
-            font=_ui_font(13),
+            text="系统已为你开启好运模式～",
+            font=_ui_font(13, True),
             foreground=_THEME["accent"],
             justify="center",
         ).pack(pady=(0, 6))
@@ -345,6 +550,15 @@ class App:
     def _build_main(self) -> None:
         pad = {"padx": 6, "pady": 4}
         self._main_fr = ttk.Frame(self.root)
+        self._main_top_canvas = tk.Canvas(
+            self._main_fr,
+            height=56,
+            highlightthickness=0,
+            bd=0,
+            bg=_THEME["bg"],
+        )
+        self._main_top_canvas.pack(fill=tk.X)
+        self._main_top_canvas.bind("<Configure>", self._on_main_top_canvas_configure)
 
         self.wecom_gate_label = ttk.Label(
             self._main_fr,
