@@ -1,28 +1,41 @@
 ---
-description: 企业版 Windows 客户端发版须含「更新日志.txt」、版本号与命名规范
+description: 客户端发版由助手执行更新日志与版本号；禁止把清单推给用户记忆或操作
 globs: client/**,.github/workflows/build-enterprise-client.yml,build_enterprise_client.bat
-alwaysApply: false
+alwaysApply: true
 ---
 
-# 客户端发版（必做清单）
+# 企业版 Windows 客户端发版 — 由助手执行，勿推给用户
 
-每次修改 `client/windows_client.py` 或发新版给员工打包时：
+## 责任划分
 
-1. **更新日志文件（必进 zip）**  
-   - 维护 `client/更新日志.txt`（文件名固定为这五个字）。  
-   - 内容须包含：**更新日期**、**版本号**、**本次更新内容**、**使用说明**。  
-   - 发版前必须 **提交到 Git**；并确认 **GitHub Actions** 与 **`build_enterprise_client.bat`** 会把该文件 **复制到 dist 输出目录**（与 exe 同目录）。
+- **助手（你）**：在用户提出「发版 / 打包 / 新版本 / 给员工客户端 / bump 版本」或**任何会导致需要新 zip 分发的客户端改动**时，**默认由你完成**下列操作，**不要**让用户「记住四件事」或自己去改文件。  
+- **用户**：仅在助手**无法**完成网络 `git push`、或仓库未配置 `gh` CLI 时，才需要 **点一次** GitHub Actions「Run workflow」；除此之外尽量不增加用户操作。
 
-2. **版本号三处一致**  
-   - `client/release_version.txt`（单行版本号，如 `1.2.0`）  
-   - `windows_client.py` 中的 `CLIENT_VERSION_FALLBACK`（与上一致）  
-   - `更新日志.txt` 中的版本号  
+## 助手必须执行的步骤（按顺序）
 
-3. **产物命名必须带版本号（勿回退）**  
-   - PyInstaller `--name EnterpriseDouyinClient-<版本号>`  
-   - GitHub Artifact 名：`EnterpriseDouyinClient-v<版本>-<短SHA>`（由工作流生成）  
-   - 窗口标题：`企业版抖音点赞监控客户端 v<版本号>`（由 `get_client_version()` 读取）
+1. **编辑 `client/更新日志.txt`**（文件名固定「更新日志.txt」）  
+   - 写入或更新：**更新日期**（以对话中的 `Today's date` 或当前日期为准）、**版本号**、**本次更新内容**、**使用说明**。  
+   - 若用户未指定版本号：在现有 `release_version.txt` 上按语义递增一位（如 1.2.0 → 1.2.1），或询问用户唯一问题「版本号定为 x.y.z？」后立刻执行，**不要**甩整份清单给用户。
 
-4. **禁止**在未更新 `更新日志.txt` 与版本号文件的情况下，只改代码就打包分发。
+2. **同步版本号（三处一致）**  
+   - `client/release_version.txt`（单行）  
+   - `client/windows_client.py` 顶部的 `CLIENT_VERSION_FALLBACK`  
+   - `更新日志.txt` 内的版本号  
 
-若用户只要求「打个包」，仍须提醒：是否已更新 `更新日志.txt` 与版本号三处。
+3. **Git**  
+   - `git add` 相关文件 → `git commit`（清晰中文说明）→ **尝试** `git push`（有权限则必须执行）。
+
+4. **云端打包**  
+   - 若环境有 `gh` 且已登录：可 `gh workflow run` 触发 **Build Enterprise Windows Client**。  
+   - 否则：**一句话**告诉用户「请到 Actions 里 Run 一次打包」即可，**不要**要求用户自己改日志或版本号文件。
+
+## 禁止
+
+- 禁止回复「请你记住去改更新日志和版本号」这类把维护责任推给用户的话。  
+- 禁止在未改 `更新日志.txt` 与三处版本号的情况下，声称客户端已可发版。  
+- **禁止**去掉或绕开「exe / 文件夹名带版本号」的打包方式（`build_enterprise_client.bat` 与 workflow 已约定）。
+
+## 技术备忘（无需复述给用户）
+
+- 工作流与 bat 会校验 `更新日志.txt` 存在并复制进 dist；Artifact 名含 `v版本-短SHA`。  
+- `get_client_version()` 读 `release_version.txt`，`CLIENT_VERSION_FALLBACK` 为兜底。
