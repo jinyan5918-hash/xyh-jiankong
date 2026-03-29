@@ -1,8 +1,11 @@
+from pathlib import Path
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-
-DATABASE_URL = "sqlite:///./app.db"
+# 固定为 server/app.db，避免「在仓库根目录启动 uvicorn」与「在 server 目录跑脚本」用到两个不同的库文件
+_DB_FILE = Path(__file__).resolve().parent.parent / "app.db"
+DATABASE_URL = "sqlite:///" + _DB_FILE.as_posix()
 
 
 class Base(DeclarativeBase):
