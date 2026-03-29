@@ -66,6 +66,10 @@ def _run_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN interval_max_sec INTEGER"))
             if "wecom_webhook_url" not in ucols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN wecom_webhook_url TEXT"))
+            # 旧库可能为 NULL，会导致登录时 count >= None 抛 TypeError → 500
+            conn.execute(text("UPDATE users SET max_devices = 2 WHERE max_devices IS NULL"))
+        if "devices" in insp.get_table_names():
+            conn.execute(text("UPDATE devices SET is_active = 1 WHERE is_active IS NULL"))
 
 
 def _ensure_admin() -> None:
@@ -119,7 +123,11 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             Device.user_id == user.id, Device.is_active.is_(True)
         )
         count = active_devices_q.count()
-        if count >= user.max_devices:
+        max_slots = user.max_devices
+        if max_slots is None:
+            max_slots = 3 if user.username == "admin" else 2
+        max_slots = max(1, min(int(max_slots), 10))
+        if count >= max_slots:
             # 满额时自动下线最久未登录设备，避免管理员被锁在后台外。
             oldest = active_devices_q.order_by(Device.last_login_at.asc()).first()
             if not oldest:
