@@ -23,6 +23,8 @@ class UserCreate(BaseModel):
     max_devices: int = Field(default=2, ge=1, le=10)
     # 新员工必填：企业微信群机器人 Webhook（一对一通知到该员工所在群）
     wecom_webhook_url: str = Field(min_length=20, max_length=1024)
+    # 超级管理员创建员工时可填小组名；主管理员创建也可选填
+    staff_group: str | None = Field(default=None, max_length=64)
 
 
 class UserUpdate(BaseModel):
@@ -30,6 +32,7 @@ class UserUpdate(BaseModel):
     max_devices: int | None = Field(default=None, ge=1, le=10)
     is_active: bool | None = None
     wecom_webhook_url: str | None = Field(default=None, max_length=1024)
+    staff_group: str | None = Field(default=None, max_length=64)
 
 
 class UserOut(BaseModel):
@@ -40,9 +43,48 @@ class UserOut(BaseModel):
     wecom_webhook_url: str | None = None
     admin_role: str = "none"
     created_by_admin_id: int | None = None
+    staff_group: str | None = None
+    # 仅列表接口填充：创建者超级管理员登录名
+    created_by_username: str | None = None
 
     class Config:
         from_attributes = True
+
+
+class PaginatedUsersOut(BaseModel):
+    items: list[UserOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class TenantAdminBrief(BaseModel):
+    id: int
+    username: str
+
+
+class AdminMetaOut(BaseModel):
+    """下拉选项：超级管理员列表（仅主管理员用）、已有小组名列表。"""
+
+    tenant_admins: list[TenantAdminBrief] = []
+    staff_groups: list[str] = []
+
+
+class AdminDeviceOut(BaseModel):
+    id: int
+    user_id: int
+    owner_username: str
+    device_id: str
+    device_name: str
+    is_active: bool
+    last_login_at: datetime
+
+
+class PaginatedDevicesOut(BaseModel):
+    items: list[AdminDeviceOut]
+    total: int
+    page: int
+    page_size: int
 
 
 class TenantAdminCreate(BaseModel):
@@ -82,6 +124,13 @@ class RecordOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PaginatedRecordsOut(BaseModel):
+    items: list[RecordOut]
+    total: int
+    page: int
+    page_size: int
 
 
 class TaskCreate(BaseModel):

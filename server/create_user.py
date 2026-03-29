@@ -40,6 +40,7 @@ def main() -> None:
                 wecom_webhook_url=wh,
                 admin_role="none",
                 created_by_admin_id=None,
+                staff_group=None,
             )
             db.add(user)
             action = "created"

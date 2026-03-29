@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import false, func, inspect, or_, text
+from sqlalchemy import and_, false, func, inspect, or_, text
 from sqlalchemy.orm import Session
 
 from .database import Base, engine
@@ -11,24 +11,29 @@ from .deps import get_current_user, get_db
 from .models import Device, MonitorRecord, MonitorTask, ReachAlert, User
 from .urlnorm import normalize_douyin_url_safe
 from .schemas import (
+    AdminDeviceOut,
+    AdminMetaOut,
+    AdminMeOut,
     LoginRequest,
+    MyRecordRow,
+    MonitorSettingsPatch,
+    MonitorStatusOut,
+    PaginatedDevicesOut,
+    PaginatedRecordsOut,
+    PaginatedUsersOut,
+    ReachAlertOut,
+    RecordOut,
     TaskCreate,
     TaskOut,
     TaskUpdate,
+    TenantAdminBrief,
+    TenantAdminCreate,
     TokenResponse,
-    DeviceOut,
-    RecordOut,
     UserCreate,
-    UserOut,
-    UserUpdate,
-    MonitorStatusOut,
-    MonitorSettingsPatch,
-    MyRecordRow,
-    ReachAlertOut,
     UserNotifySettingsOut,
     UserNotifySettingsPatch,
-    TenantAdminCreate,
-    AdminMeOut,
+    UserOut,
+    UserUpdate,
 )
 from .security import create_access_token, hash_password, verify_password
 from .scheduler import scheduler
@@ -74,6 +79,8 @@ def _run_lightweight_migrations() -> None:
                 )
             if "created_by_admin_id" not in ucols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN created_by_admin_id INTEGER"))
+            if "staff_group" not in ucols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN staff_group VARCHAR(64)"))
             # 旧库可能为 NULL，会导致登录时 count >= None 抛 TypeError → 500
             conn.execute(text("UPDATE users SET max_devices = 2 WHERE max_devices IS NULL"))
             conn.execute(text("UPDATE users SET admin_role = 'main' WHERE username = 'admin'"))
@@ -166,6 +173,35 @@ def _records_query_scoped(db: Session, admin: User):
             return q.filter(false())
         q = q.filter(MonitorTask.user_id.in_(ids))
     return q
+
+
+def _admin_user_search_filter(q, search: str | None):
+    if not search or not (t := search.strip()):
+        return q
+    if t.isdigit():
+        return q.filter(or_(User.id == int(t), User.username.contains(t)))
+    return q.filter(User.username.contains(t))
+
+
+def _fill_creator_names(db: Session, users: list[User]) -> dict[int, str]:
+    ids = {u.created_by_admin_id for u in users if u.created_by_admin_id}
+    if not ids:
+        return {}
+    rows = db.query(User.id, User.username).filter(User.id.in_(ids)).all()
+    return {r[0]: r[1] for r in rows}
+
+
+def _users_to_out_batch(db: Session, users: list[User]) -> list[UserOut]:
+    names = _fill_creator_names(db, users)
+    outs: list[UserOut] = []
+    for u in users:
+        cname = None
+        if (u.admin_role or "none") == "none" and u.created_by_admin_id:
+            cname = names.get(u.created_by_admin_id)
+        outs.append(
+            UserOut.model_validate(u).model_copy(update={"created_by_username": cname})
+        )
+    return outs
 
 
 @app.get("/health")
@@ -600,27 +636,93 @@ def admin_create_tenant_admin(
     return user
 
 
-@app.get("/admin/users", response_model=list[UserOut])
-def admin_list_users(
+@app.get("/admin/meta", response_model=AdminMetaOut)
+def admin_meta(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _require_admin_console(current_user)
+    groups_q = db.query(User.staff_group).filter(
+        User.admin_role == "none",
+        User.staff_group.isnot(None),
+        User.staff_group != "",
+    )
+    if _is_tenant_admin(current_user):
+        groups_q = groups_q.filter(User.created_by_admin_id == current_user.id)
+    raw_groups = [
+        r[0] for r in groups_q.distinct().order_by(User.staff_group.asc()).all()
+    ]
+    tenants: list[TenantAdminBrief] = []
     if _is_main_admin(current_user):
-        return (
-            db.query(User)
-            .filter(or_(User.admin_role == "tenant", User.admin_role == "none"))
-            .order_by(User.admin_role.desc(), User.id.asc())
+        trows = (
+            db.query(User.id, User.username)
+            .filter(User.admin_role == "tenant")
+            .order_by(User.id.asc())
             .all()
         )
-    return (
-        db.query(User)
-        .filter(
+        tenants = [TenantAdminBrief(id=r[0], username=r[1]) for r in trows]
+    return AdminMetaOut(tenant_admins=tenants, staff_groups=raw_groups)
+
+
+@app.get("/admin/users", response_model=PaginatedUsersOut)
+def admin_list_users(
+    page: int = 1,
+    page_size: int = 10,
+    search: str | None = None,
+    staff_owner: str | None = None,
+    staff_group: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """staff_owner：主管理员用。空=全部；unassigned=主管理员直接创建的员工；数字=某超级管理员及其员工。"""
+    _require_admin_console(current_user)
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    q = db.query(User)
+    if _is_main_admin(current_user):
+        q = q.filter(or_(User.admin_role == "tenant", User.admin_role == "none"))
+        so = (staff_owner or "").strip().lower()
+        if so == "unassigned":
+            q = q.filter(
+                or_(
+                    User.admin_role == "tenant",
+                    and_(User.admin_role == "none", User.created_by_admin_id.is_(None)),
+                )
+            )
+        elif (sow := (staff_owner or "").strip()) and sow.isdigit():
+            oid = int(sow)
+            q = q.filter(
+                or_(
+                    and_(User.admin_role == "tenant", User.id == oid),
+                    and_(User.admin_role == "none", User.created_by_admin_id == oid),
+                )
+            )
+    else:
+        q = q.filter(
             User.admin_role == "none",
             User.created_by_admin_id == current_user.id,
         )
-        .order_by(User.id.asc())
+    sg = (staff_group or "").strip()
+    if sg:
+        q = q.filter(
+            or_(
+                User.admin_role == "tenant",
+                and_(User.admin_role == "none", User.staff_group == sg),
+            )
+        )
+    q = _admin_user_search_filter(q, search)
+    total = q.count()
+    rows = (
+        q.order_by(User.admin_role.desc(), User.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
+    )
+    return PaginatedUsersOut(
+        items=_users_to_out_batch(db, rows),
+        total=total,
+        page=page,
+        page_size=page_size,
     )
 
 
@@ -646,6 +748,7 @@ def admin_create_user(
             status_code=400,
             detail="企业微信 Webhook 须以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头",
         )
+    sg = (payload.staff_group or "").strip() or None
     user = User(
         username=payload.username,
         password_hash=hash_password(payload.password),
@@ -654,6 +757,7 @@ def admin_create_user(
         wecom_webhook_url=w,
         admin_role="none",
         created_by_admin_id=owner_id,
+        staff_group=sg,
     )
     db.add(user)
     db.commit()
@@ -691,6 +795,14 @@ def admin_update_user(
                 detail="企业微信 Webhook 格式不正确",
             )
         updates["wecom_webhook_url"] = w or None
+    if "staff_group" in updates:
+        if (user.admin_role or "none") != "none":
+            updates.pop("staff_group")
+        else:
+            raw = updates.pop("staff_group")
+            user.staff_group = (
+                raw.strip() if isinstance(raw, str) and raw.strip() else None
+            )
     for key, value in updates.items():
         setattr(user, key, value)
     db.commit()
@@ -724,19 +836,54 @@ def admin_delete_user(
     return {"ok": True}
 
 
-@app.get("/admin/devices", response_model=list[DeviceOut])
+@app.get("/admin/devices", response_model=PaginatedDevicesOut)
 def admin_list_devices(
+    page: int = 1,
+    page_size: int = 10,
+    search: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _require_admin_console(current_user)
-    q = db.query(Device)
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    q = db.query(Device, User.username).join(User, User.id == Device.user_id)
     if _is_tenant_admin(current_user):
         ids = _tenant_staff_ids(db, current_user)
         if not ids:
-            return []
+            return PaginatedDevicesOut(
+                items=[], total=0, page=page, page_size=page_size
+            )
         q = q.filter(Device.user_id.in_(ids))
-    return q.order_by(Device.last_login_at.desc()).all()
+    if search and (t := search.strip()):
+        if t.isdigit():
+            q = q.filter(
+                or_(Device.user_id == int(t), User.username.contains(t))
+            )
+        else:
+            q = q.filter(User.username.contains(t))
+    total = q.count()
+    rows = (
+        q.order_by(Device.last_login_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    items = [
+        AdminDeviceOut(
+            id=d.id,
+            user_id=d.user_id,
+            owner_username=uname,
+            device_id=d.device_id,
+            device_name=d.device_name,
+            is_active=d.is_active,
+            last_login_at=d.last_login_at,
+        )
+        for d, uname in rows
+    ]
+    return PaginatedDevicesOut(
+        items=items, total=total, page=page, page_size=page_size
+    )
 
 
 @app.patch("/admin/devices/{device_pk}/deactivate")
@@ -775,9 +922,10 @@ def admin_activate_device(
     return {"ok": True}
 
 
-@app.get("/admin/records", response_model=list[RecordOut])
+@app.get("/admin/records", response_model=PaginatedRecordsOut)
 def admin_recent_records(
-    limit: int = 50,
+    page: int = 1,
+    page_size: int = 10,
     user_id: int | None = None,
     task_id: int | None = None,
     success: bool | None = None,
@@ -786,6 +934,8 @@ def admin_recent_records(
     db: Session = Depends(get_db),
 ):
     _require_admin_console(current_user)
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
     q = _records_query_scoped(db, current_user)
     if user_id is not None:
         if _is_tenant_admin(current_user):
@@ -800,18 +950,37 @@ def admin_recent_records(
     if hours is not None and hours > 0:
         since = datetime.utcnow() - timedelta(hours=hours)
         q = q.filter(MonitorRecord.checked_at >= since)
-    records = q.order_by(MonitorRecord.checked_at.desc()).limit(max(1, min(limit, 500))).all()
-    return records
+    total = q.count()
+    records = (
+        q.order_by(MonitorRecord.checked_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return PaginatedRecordsOut(
+        items=records,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @app.get("/admin/stats")
 def admin_stats(
     hours: int = 24,
+    fail_page: int = 1,
+    fail_page_size: int = 10,
+    hour_page: int = 1,
+    hour_page_size: int = 12,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _require_admin_console(current_user)
     hours = max(1, min(hours, 168))
+    fail_page = max(1, fail_page)
+    fail_page_size = max(1, min(fail_page_size, 50))
+    hour_page = max(1, hour_page)
+    hour_page_size = max(1, min(hour_page_size, 48))
     since = datetime.utcnow() - timedelta(hours=hours)
 
     def _stats_base():
@@ -824,7 +993,7 @@ def admin_stats(
     failed_count = total - success_count
     success_rate = (success_count / total * 100.0) if total else 0.0
 
-    fail_top = (
+    fail_top_all = (
         _stats_base()
         .filter(
             MonitorRecord.success.is_(False),
@@ -836,9 +1005,13 @@ def admin_stats(
         )
         .group_by(MonitorRecord.error_message)
         .order_by(text("cnt DESC"))
-        .limit(5)
+        .limit(200)
         .all()
     )
+    fail_list = [{"error": e, "count": int(c)} for e, c in fail_top_all]
+    fail_total = len(fail_list)
+    f0 = (fail_page - 1) * fail_page_size
+    fail_top_page = fail_list[f0 : f0 + fail_page_size]
 
     by_hour_raw = (
         _stats_base()
@@ -851,6 +1024,9 @@ def admin_stats(
         .all()
     )
     by_hour = [{"hour": h, "count": int(c)} for h, c in by_hour_raw]
+    hour_total = len(by_hour)
+    h0 = (hour_page - 1) * hour_page_size
+    by_hour_page = by_hour[h0 : h0 + hour_page_size]
 
     return {
         "hours": hours,
@@ -858,8 +1034,14 @@ def admin_stats(
         "success_count": int(success_count),
         "failed_count": int(failed_count),
         "success_rate": round(success_rate, 2),
-        "fail_top": [{"error": e, "count": int(c)} for e, c in fail_top],
-        "checks_by_hour": by_hour,
+        "fail_top": fail_top_page,
+        "fail_top_total": fail_total,
+        "fail_page": fail_page,
+        "fail_page_size": fail_page_size,
+        "checks_by_hour": by_hour_page,
+        "checks_by_hour_total": hour_total,
+        "hour_page": hour_page,
+        "hour_page_size": hour_page_size,
     }
 
 

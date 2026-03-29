@@ -29,6 +29,8 @@ class User(Base):
     created_by_admin_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), nullable=True, index=True
     )
+    # 超级管理员自建员工可选小组标签，便于后台筛选
+    staff_group: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     devices: Mapped[list["Device"]] = relationship(back_populates="user")
     monitor_tasks: Mapped[list["MonitorTask"]] = relationship(back_populates="user")

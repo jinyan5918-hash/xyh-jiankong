@@ -15,6 +15,10 @@
     .muted { color:#666; font-size:13px; }
     .ok { color:#0a7a28; }
     .err { color:#c21d1d; }
+    .pager { margin-top:10px; align-items:center; }
+    details.section-details { margin-top:8px; }
+    details.section-details > summary { cursor:pointer; color:#444; font-size:14px; user-select:none; }
+    details.section-details[open] > summary { margin-bottom:8px; }
   </style>
 </head>
 <body>
@@ -44,7 +48,10 @@
       <button onclick="schedulerStatus()">刷新状态</button>
       <span id="schedulerStatus" class="muted">状态未知</span>
     </div>
-    <pre id="schedulerDetails" class="muted"></pre>
+    <details class="section-details">
+      <summary>展开/收起 · 调度器详细状态（JSON）</summary>
+      <pre id="schedulerDetails" class="muted" style="max-height:280px;overflow:auto;"></pre>
+    </details>
   </div>
 
   <div id="tenantAdminCard" class="card" style="display:none;">
@@ -59,42 +66,68 @@
 
   <div class="card">
     <h2>员工账号管理</h2>
-    <p class="muted">新建员工必须填写其「企业微信群机器人 Webhook」，员工登录 Windows 客户端后会自动带出，无需员工自己找地址（仍可在客户端修改）。</p>
+    <p class="muted">新建员工必须填写其「企业微信群机器人 Webhook」，员工登录 Windows 客户端后会自动带出，无需员工自己找地址（仍可在客户端修改）。超级管理员可为员工填写「小组」便于筛选。</p>
+    <div class="row" id="staffOwnerFilterRow" style="display:none;">
+      <label class="muted">按创建者筛选（员工）</label>
+      <select id="filterStaffOwner" style="padding:8px; min-width:280px;" onchange="userPage=1; loadUsers();">
+        <option value="">全部（员工来源）</option>
+        <option value="unassigned">主管理员直接创建</option>
+      </select>
+    </div>
+    <div class="row">
+      <input id="userSearch" placeholder="搜索用户名或用户ID" style="width:200px;" />
+      <label class="muted">小组</label>
+      <input id="filterStaffGroup" placeholder="筛选小组（可空）" list="staffGroupList" style="width:160px;" />
+      <datalist id="staffGroupList"></datalist>
+      <button onclick="resetUserFilters()">重置筛选</button>
+    </div>
     <div class="row">
       <input id="newUsername" placeholder="新账号名" />
       <input id="newPassword" placeholder="初始密码（>=8位）" />
       <input id="newMaxDevices" type="number" value="2" min="1" max="10" />
+      <input id="newStaffGroup" placeholder="小组（选填）" style="width:140px;" list="staffGroupList" />
     </div>
     <div class="row" style="margin-top:8px; width:100%;">
       <input id="newWecomWebhook" placeholder="企业微信 Webhook（必填，以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头）" style="flex:1; min-width:320px; max-width:900px;" />
     </div>
     <div class="row">
       <button onclick="createUser()">创建账号</button>
-      <button onclick="loadUsers()">刷新列表</button>
+      <button onclick="userPage=1; loadUsers()">刷新列表</button>
     </div>
     <table>
       <thead>
         <tr>
-          <th>ID</th><th>类型</th><th>用户名</th><th>Webhook(摘要)</th><th>设备上限</th><th>启用状态</th><th>操作</th>
+          <th>ID</th><th>类型</th><th>用户名</th><th>小组</th><th>创建者</th><th>Webhook(摘要)</th><th>设备上限</th><th>启用状态</th><th>操作</th>
         </tr>
       </thead>
       <tbody id="usersTable"></tbody>
     </table>
+    <div class="row pager">
+      <button type="button" onclick="userPrevPage()">上一页</button>
+      <span id="userPageInfo" class="muted"></span>
+      <button type="button" onclick="userNextPage()">下一页</button>
+    </div>
   </div>
 
   <div class="card">
     <h2>设备管理（可踢设备下线）</h2>
     <div class="row">
-      <button onclick="loadDevices()">刷新设备</button>
+      <input id="deviceSearch" placeholder="搜索用户名或用户ID" style="width:200px;" />
+      <button onclick="devicePage=1; loadDevices()">搜索 / 刷新</button>
     </div>
     <table>
       <thead>
         <tr>
-          <th>设备PK</th><th>用户ID</th><th>设备ID</th><th>设备名</th><th>状态</th><th>最后登录</th><th>操作</th>
+          <th>设备PK</th><th>用户ID</th><th>用户名</th><th>设备ID</th><th>设备名</th><th>状态</th><th>最后登录</th><th>操作</th>
         </tr>
       </thead>
       <tbody id="devicesTable"></tbody>
     </table>
+    <div class="row pager">
+      <button type="button" onclick="devicePrevPage()">上一页</button>
+      <span id="devicePageInfo" class="muted"></span>
+      <button type="button" onclick="deviceNextPage()">下一页</button>
+    </div>
   </div>
 
   <div class="card">
@@ -108,38 +141,61 @@
         <option value="false">仅失败</option>
       </select>
       <input id="filterHours" type="number" placeholder="最近N小时" value="24" style="width:110px" />
-      <input id="filterLimit" type="number" placeholder="条数" value="50" style="width:90px" />
-      <button onclick="loadRecords()">刷新记录</button>
+      <button onclick="recordPage=1; loadRecords()">刷新记录</button>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th><th>任务ID</th><th>检测时间</th><th>点赞</th><th>成功</th><th>错误</th>
-        </tr>
-      </thead>
-      <tbody id="recordsTable"></tbody>
-    </table>
+    <details class="section-details" open>
+      <summary>检测记录表格（可折叠）</summary>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>任务ID</th><th>检测时间</th><th>点赞</th><th>成功</th><th>错误</th>
+          </tr>
+        </thead>
+        <tbody id="recordsTable"></tbody>
+      </table>
+      <div class="row pager">
+        <button type="button" onclick="recordPrevPage()">上一页</button>
+        <span id="recordPageInfo" class="muted"></span>
+        <button type="button" onclick="recordNextPage()">下一页</button>
+      </div>
+    </details>
   </div>
 
   <div class="card">
     <h2>统计看板</h2>
     <div class="row">
       <input id="statsHours" type="number" value="24" min="1" max="168" style="width:110px" />
-      <button onclick="loadStats()">刷新统计</button>
+      <button onclick="statsFailPage=1; statsHourPage=1; loadStats()">刷新统计</button>
       <span id="statsSummary" class="muted">暂无统计</span>
     </div>
-    <table>
-      <thead>
-        <tr><th>失败原因</th><th>次数</th></tr>
-      </thead>
-      <tbody id="failTopTable"></tbody>
-    </table>
-    <table style="margin-top:12px;">
-      <thead>
-        <tr><th>小时</th><th>检测量</th></tr>
-      </thead>
-      <tbody id="checksByHourTable"></tbody>
-    </table>
+    <details class="section-details" open>
+      <summary>失败原因 Top（分页，可折叠）</summary>
+      <table>
+        <thead>
+          <tr><th>失败原因</th><th>次数</th></tr>
+        </thead>
+        <tbody id="failTopTable"></tbody>
+      </table>
+      <div class="row pager">
+        <button type="button" onclick="statsFailPrev()">上一页</button>
+        <span id="statsFailPageInfo" class="muted"></span>
+        <button type="button" onclick="statsFailNext()">下一页</button>
+      </div>
+    </details>
+    <details class="section-details" open>
+      <summary>按小时检测量（分页，可折叠）</summary>
+      <table>
+        <thead>
+          <tr><th>小时</th><th>检测量</th></tr>
+        </thead>
+        <tbody id="checksByHourTable"></tbody>
+      </table>
+      <div class="row pager">
+        <button type="button" onclick="statsHourPrev()">上一页</button>
+        <span id="statsHourPageInfo" class="muted"></span>
+        <button type="button" onclick="statsHourNext()">下一页</button>
+      </div>
+    </details>
   </div>
   </div>
 
@@ -147,9 +203,29 @@
     const API = "";
     let token = "";
     let adminRole = "none";
+    let userPage = 1;
+    const userPageSize = 10;
+    let userListTotal = 0;
+    let devicePage = 1;
+    const devicePageSize = 10;
+    let deviceListTotal = 0;
+    let recordPage = 1;
+    const recordPageSize = 10;
+    let recordListTotal = 0;
+    let statsFailPage = 1;
+    const statsFailPageSize = 10;
+    let statsFailTotal = 0;
+    let statsHourPage = 1;
+    const statsHourPageSize = 12;
+    let statsHourTotal = 0;
 
     function headers() {
       return token ? { "Authorization": "Bearer " + token, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+    }
+
+    function escapeHtml(s) {
+      if (s == null || s === "") return "";
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
     }
 
     function applyRoleUi() {
@@ -159,6 +235,7 @@
       document.getElementById("schedulerHintMain").style.display = isMain ? "block" : "none";
       document.getElementById("schedulerButtonsRow").style.display = isMain ? "flex" : "none";
       document.getElementById("tenantAdminCard").style.display = isMain ? "block" : "none";
+      document.getElementById("staffOwnerFilterRow").style.display = isMain ? "flex" : "none";
       const label = isMain ? "主管理员" : (isTenant ? "超级管理员" : "后台");
       document.getElementById("roleBannerText").textContent = "当前身份：" + label + " — 超级管理员仅能管理本部门员工；员工请使用 Windows 客户端登录。";
     }
@@ -196,12 +273,120 @@
         }
       }
       adminRole = ar === "main" || ar === "tenant" ? ar : "none";
+      userPage = 1;
+      devicePage = 1;
+      recordPage = 1;
+      statsFailPage = 1;
+      statsHourPage = 1;
       applyRoleUi();
+      await loadMeta();
       await loadUsers();
       await loadDevices();
       await loadRecords();
       await loadStats();
       await schedulerStatus();
+    }
+
+    async function loadMeta() {
+      const r = await fetch(API + "/admin/meta", { headers: headers() });
+      if (!r.ok) return;
+      const m = await r.json();
+      const sel = document.getElementById("filterStaffOwner");
+      if (sel && adminRole === "main") {
+        const keep = sel.value;
+        sel.innerHTML = '<option value="">全部（员工来源）</option><option value="unassigned">主管理员直接创建</option>';
+        for (const t of m.tenant_admins || []) {
+          const o = document.createElement("option");
+          o.value = String(t.id);
+          o.textContent = "超级管理员: " + t.username + " (id " + t.id + ")";
+          sel.appendChild(o);
+        }
+        if (keep) sel.value = keep;
+      }
+      const dl = document.getElementById("staffGroupList");
+      if (dl) {
+        dl.innerHTML = "";
+        for (const g of m.staff_groups || []) {
+          const opt = document.createElement("option");
+          opt.value = g;
+          dl.appendChild(opt);
+        }
+      }
+    }
+
+    function resetUserFilters() {
+      document.getElementById("userSearch").value = "";
+      document.getElementById("filterStaffGroup").value = "";
+      const sel = document.getElementById("filterStaffOwner");
+      if (sel) sel.value = "";
+      userPage = 1;
+      loadUsers();
+    }
+
+    function userPrevPage() {
+      if (userPage > 1) {
+        userPage--;
+        loadUsers();
+      }
+    }
+    function userNextPage() {
+      const maxP = Math.max(1, Math.ceil(userListTotal / userPageSize));
+      if (userPage < maxP) {
+        userPage++;
+        loadUsers();
+      }
+    }
+    function devicePrevPage() {
+      if (devicePage > 1) {
+        devicePage--;
+        loadDevices();
+      }
+    }
+    function deviceNextPage() {
+      const maxP = Math.max(1, Math.ceil(deviceListTotal / devicePageSize));
+      if (devicePage < maxP) {
+        devicePage++;
+        loadDevices();
+      }
+    }
+    function recordPrevPage() {
+      if (recordPage > 1) {
+        recordPage--;
+        loadRecords();
+      }
+    }
+    function recordNextPage() {
+      const maxP = Math.max(1, Math.ceil(recordListTotal / recordPageSize));
+      if (recordPage < maxP) {
+        recordPage++;
+        loadRecords();
+      }
+    }
+    function statsFailPrev() {
+      if (statsFailPage > 1) {
+        statsFailPage--;
+        loadStats();
+      }
+    }
+    function statsFailNext() {
+      const maxP = Math.max(1, Math.ceil(statsFailTotal / statsFailPageSize));
+      if (statsFailPage < maxP) {
+        statsFailPage++;
+        loadStats();
+      }
+    }
+    function statsHourPrev() {
+      if (statsHourPage > 1) {
+        statsHourPage--;
+        loadStats();
+      }
+    }
+    function statsHourNext() {
+      const maxP = Math.max(1, Math.ceil(statsHourTotal / statsHourPageSize));
+      if (statsHourPage < maxP) {
+        statsHourPage++;
+        loadStats();
+      }
     }
 
     async function schedulerStart() {
@@ -245,14 +430,31 @@
       }
       document.getElementById("taUsername").value = "";
       document.getElementById("taPassword").value = "";
+      await loadMeta();
       await loadUsers();
       alert("已开通超级管理员");
     }
 
     async function loadUsers() {
-      const r = await fetch(API + "/admin/users", { method: "GET", headers: headers() });
+      const params = new URLSearchParams();
+      params.set("page", String(userPage));
+      params.set("page_size", String(userPageSize));
+      const us = document.getElementById("userSearch").value.trim();
+      if (us) params.set("search", us);
+      if (adminRole === "main") {
+        const so = document.getElementById("filterStaffOwner").value;
+        if (so) params.set("staff_owner", so);
+      }
+      const sg = document.getElementById("filterStaffGroup").value.trim();
+      if (sg) params.set("staff_group", sg);
+      const r = await fetch(API + "/admin/users?" + params.toString(), { headers: headers() });
       if (!r.ok) return;
-      const users = await r.json();
+      const data = await r.json();
+      const users = data.items || [];
+      userListTotal = data.total || 0;
+      const maxP = Math.max(1, Math.ceil(userListTotal / userPageSize));
+      document.getElementById("userPageInfo").textContent =
+        "第 " + userPage + " / " + maxP + " 页，共 " + userListTotal + " 条";
       const tbody = document.getElementById("usersTable");
       tbody.innerHTML = "";
       for (const u of users) {
@@ -263,7 +465,9 @@
           tr.innerHTML = `
             <td>${u.id}</td>
             <td>${typeLabel}</td>
-            <td>${u.username}</td>
+            <td>${escapeHtml(u.username)}</td>
+            <td>—</td>
+            <td>—</td>
             <td>—</td>
             <td>—</td>
             <td>${u.is_active ? "启用" : "禁用"}</td>
@@ -276,10 +480,13 @@
         } else {
           const wh = u.wecom_webhook_url || "";
           const whShort = wh.length > 40 ? (wh.substring(0, 40) + "…") : (wh || "—");
+          const creator = escapeHtml(u.created_by_username || (u.created_by_admin_id ? ("#" + u.created_by_admin_id) : "—"));
           tr.innerHTML = `
             <td>${u.id}</td>
             <td>${typeLabel}</td>
-            <td>${u.username}</td>
+            <td>${escapeHtml(u.username)}</td>
+            <td>${escapeHtml(u.staff_group || "—")}</td>
+            <td>${creator}</td>
             <td title="${wh.replace(/"/g, "&quot;")}" style="font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;">${whShort}</td>
             <td><input id="max_${u.id}" type="number" min="1" max="10" value="${u.max_devices}" style="width:70px"/></td>
             <td>${u.is_active ? "启用" : "禁用"}</td>
@@ -288,12 +495,31 @@
               <button onclick="resetPwd(${u.id})">重置密码</button>
               <button onclick="updateMax(${u.id})">更新设备上限</button>
               <button onclick="editWecom(${u.id})">修改Webhook</button>
+              <button onclick="editStaffGroup(${u.id})">改小组</button>
               <button onclick="deleteUser(${u.id}, false)">删除用户</button>
             </td>
           `;
         }
         tbody.appendChild(tr);
       }
+    }
+
+    async function editStaffGroup(userId) {
+      const g = prompt("小组名称（留空则取消分组）：");
+      if (g === null) return;
+      const body = { staff_group: g.trim() ? g.trim() : null };
+      const r = await fetch(API + "/admin/users/" + userId, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        alert("保存失败: " + await r.text());
+        return;
+      }
+      await loadMeta();
+      await loadUsers();
+      alert("已更新小组");
     }
 
     async function createUser() {
@@ -313,11 +539,13 @@
         alert("请填写完整的企业微信 Webhook 地址（以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头）");
         return;
       }
+      const sg = document.getElementById("newStaffGroup").value.trim();
       const payload = {
         username,
         password,
         max_devices: maxDevices,
         wecom_webhook_url: wecom,
+        staff_group: sg || null,
       };
       const r = await fetch(API + "/admin/users", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
       if (!r.ok) {
@@ -337,10 +565,12 @@
         alert("创建失败: " + msg);
         return;
       }
+      await loadMeta();
       await loadUsers();
       document.getElementById("newUsername").value = "";
       document.getElementById("newPassword").value = "";
       document.getElementById("newWecomWebhook").value = "";
+      document.getElementById("newStaffGroup").value = "";
       alert("创建成功");
     }
 
@@ -415,9 +645,19 @@
     }
 
     async function loadDevices() {
-      const r = await fetch(API + "/admin/devices", { method: "GET", headers: headers() });
+      const params = new URLSearchParams();
+      params.set("page", String(devicePage));
+      params.set("page_size", String(devicePageSize));
+      const ds = document.getElementById("deviceSearch").value.trim();
+      if (ds) params.set("search", ds);
+      const r = await fetch(API + "/admin/devices?" + params.toString(), { headers: headers() });
       if (!r.ok) return;
-      const devices = await r.json();
+      const data = await r.json();
+      const devices = data.items || [];
+      deviceListTotal = data.total || 0;
+      const maxP = Math.max(1, Math.ceil(deviceListTotal / devicePageSize));
+      document.getElementById("devicePageInfo").textContent =
+        "第 " + devicePage + " / " + maxP + " 页，共 " + deviceListTotal + " 条";
       const tbody = document.getElementById("devicesTable");
       tbody.innerHTML = "";
       for (const d of devices) {
@@ -425,8 +665,9 @@
         tr.innerHTML = `
           <td>${d.id}</td>
           <td>${d.user_id}</td>
-          <td>${d.device_id}</td>
-          <td>${d.device_name}</td>
+          <td>${escapeHtml(d.owner_username || "")}</td>
+          <td>${escapeHtml(d.device_id)}</td>
+          <td>${escapeHtml(d.device_name)}</td>
           <td>${d.is_active ? "在线" : "已下线"}</td>
           <td>${d.last_login_at}</td>
           <td>
@@ -454,16 +695,21 @@
       const taskId = document.getElementById("filterTaskId").value.trim();
       const success = document.getElementById("filterSuccess").value;
       const hours = document.getElementById("filterHours").value.trim();
-      const limit = document.getElementById("filterLimit").value.trim() || "50";
       const params = new URLSearchParams();
-      params.set("limit", limit);
+      params.set("page", String(recordPage));
+      params.set("page_size", String(recordPageSize));
       if (userId) params.set("user_id", userId);
       if (taskId) params.set("task_id", taskId);
       if (success) params.set("success", success);
       if (hours) params.set("hours", hours);
-      const r = await fetch(API + "/admin/records?" + params.toString(), { method: "GET", headers: headers() });
+      const r = await fetch(API + "/admin/records?" + params.toString(), { headers: headers() });
       if (!r.ok) return;
-      const records = await r.json();
+      const data = await r.json();
+      const records = data.items || [];
+      recordListTotal = data.total || 0;
+      const maxP = Math.max(1, Math.ceil(recordListTotal / recordPageSize));
+      document.getElementById("recordPageInfo").textContent =
+        "第 " + recordPage + " / " + maxP + " 页，共 " + recordListTotal + " 条";
       const tbody = document.getElementById("recordsTable");
       tbody.innerHTML = "";
       for (const rec of records) {
@@ -474,7 +720,7 @@
           <td>${rec.checked_at}</td>
           <td>${rec.likes ?? ""}</td>
           <td>${rec.success ? "是" : "否"}</td>
-          <td>${rec.error_message || ""}</td>
+          <td>${escapeHtml(rec.error_message || "")}</td>
         `;
         tbody.appendChild(tr);
       }
@@ -482,17 +728,32 @@
 
     async function loadStats() {
       const hours = Number(document.getElementById("statsHours").value || 24);
-      const r = await fetch(API + "/admin/stats?hours=" + hours, { method: "GET", headers: headers() });
+      const params = new URLSearchParams();
+      params.set("hours", String(hours));
+      params.set("fail_page", String(statsFailPage));
+      params.set("fail_page_size", String(statsFailPageSize));
+      params.set("hour_page", String(statsHourPage));
+      params.set("hour_page_size", String(statsHourPageSize));
+      const r = await fetch(API + "/admin/stats?" + params.toString(), { headers: headers() });
       if (!r.ok) return;
       const data = await r.json();
       document.getElementById("statsSummary").textContent =
         `最近${data.hours}小时：总检测 ${data.total_checks}，成功 ${data.success_count}，失败 ${data.failed_count}，成功率 ${data.success_rate}%`;
 
+      statsFailTotal = data.fail_top_total || 0;
+      statsHourTotal = data.checks_by_hour_total || 0;
+      const fmax = Math.max(1, Math.ceil(statsFailTotal / statsFailPageSize));
+      const hmax = Math.max(1, Math.ceil(statsHourTotal / statsHourPageSize));
+      document.getElementById("statsFailPageInfo").textContent =
+        "第 " + statsFailPage + " / " + fmax + " 页，共 " + statsFailTotal + " 条原因";
+      document.getElementById("statsHourPageInfo").textContent =
+        "第 " + statsHourPage + " / " + hmax + " 页，共 " + statsHourTotal + " 个小时桶";
+
       const failBody = document.getElementById("failTopTable");
       failBody.innerHTML = "";
       for (const item of (data.fail_top || [])) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${item.error}</td><td>${item.count}</td>`;
+        tr.innerHTML = `<td>${escapeHtml(item.error)}</td><td>${item.count}</td>`;
         failBody.appendChild(tr);
       }
 
@@ -500,7 +761,7 @@
       byHourBody.innerHTML = "";
       for (const item of (data.checks_by_hour || [])) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${item.hour}</td><td>${item.count}</td>`;
+        tr.innerHTML = `<td>${escapeHtml(item.hour)}</td><td>${item.count}</td>`;
         byHourBody.appendChild(tr);
       }
     }
