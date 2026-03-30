@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.7"
+CLIENT_VERSION_FALLBACK = "1.2.8"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -470,6 +470,23 @@ class App:
                     ("pressed", T["btn_pressed"]),
                 ],
             )
+            # 任务行操作按钮：略减左右内边距，避免文字两侧留白过大
+            style.configure(
+                "Compact.TButton",
+                padding=(6, 4),
+                font=_ui_font(10),
+                background=T["btn_bg"],
+                foreground=T["btn_fg"],
+                borderwidth=0,
+                focuscolor=T["bg"],
+            )
+            style.map(
+                "Compact.TButton",
+                background=[
+                    ("active", T["btn_active"]),
+                    ("pressed", T["btn_pressed"]),
+                ],
+            )
             style.configure(
                 "Treeview",
                 rowheight=26,
@@ -657,15 +674,9 @@ class App:
         te3 = ttk.Entry(task_form, textvariable=self.step_var, width=10)
         te3.pack(side="left", padx=(8, 8))
         self._widgets_need_wecom.append(te3)
-        for txt, cmd in [
-            ("新增任务", self.create_task),
-            ("刷新列表", self.refresh_tasks),
-            ("更新选中", self.update_selected_task),
-            ("删除选中", self.delete_selected_task),
-        ]:
-            b = ttk.Button(task_form, text=txt, command=cmd)
-            b.pack(side="left", **pad)
-            self._widgets_need_wecom.append(b)
+        b_new = ttk.Button(task_form, text="新增任务", command=self.create_task)
+        b_new.pack(side="left", **pad)
+        self._widgets_need_wecom.append(b_new)
 
         task_row2 = ttk.Frame(self._main_fr, padding=(12, 0, 12, 6))
         task_row2.pack(fill="x")
@@ -682,18 +693,24 @@ class App:
         ).pack(anchor="w", pady=(0, 6))
         task_btns = ttk.Frame(task_row2)
         task_btns.pack(anchor="w")
+        _btn_pad = (0, 5)
         for txt, cmd in [
             ("暂停任务", self.task_pause_selected),
             ("恢复任务", self.task_resume_selected),
             ("停用任务", self.task_disable_selected),
             ("启用任务", self.task_enable_selected),
+            ("刷新列表", self.refresh_tasks),
+            ("更新选中", self.update_selected_task),
+            ("删除选中", self.delete_selected_task),
         ]:
-            b = ttk.Button(task_btns, text=txt, command=cmd)
-            b.pack(side="left", padx=(0, 8))
+            b = ttk.Button(task_btns, text=txt, command=cmd, style="Compact.TButton")
+            b.pack(side="left", padx=_btn_pad)
             self._widgets_need_wecom.append(b)
 
-        table_wrap = ttk.Frame(self._main_fr, padding=(12, 0, 12, 8))
-        table_wrap.pack(fill="both", expand=True)
+        mid_pane = ttk.PanedWindow(self._main_fr, orient=tk.VERTICAL)
+        mid_pane.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        table_wrap = ttk.Frame(mid_pane, padding=(0, 0, 0, 6))
         sort_bar = ttk.Frame(table_wrap)
         sort_bar.pack(fill="x", pady=(0, 6))
         ttk.Label(sort_bar, text="列表排序").pack(side="left", padx=(0, 8))
@@ -762,12 +779,17 @@ class App:
         self._ctx_menu.add_command(label="停用此任务", command=self.task_disable_selected)
         self._ctx_menu.add_command(label="启用此任务", command=self.task_enable_selected)
 
+        mid_pane.add(table_wrap, weight=5)
         log_fr = ttk.LabelFrame(
-            self._main_fr,
+            mid_pane,
             text="监控日志（服务端检测记录，时间为北京时间）",
             padding=(8, 4),
         )
-        log_fr.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        mid_pane.add(log_fr, weight=2)
+        try:
+            mid_pane.paneconfigure(log_fr, minsize=120)
+        except Exception:
+            pass
         self.log_text = scrolledtext.ScrolledText(
             log_fr,
             height=9,
