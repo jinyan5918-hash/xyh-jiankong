@@ -4,6 +4,7 @@
 启用：export DOUYIN_USE_PLAYWRIGHT=1（或由 systemd Environment= 设置）
 依赖：pip install playwright && playwright install chromium
 可选：DOUYIN_COOKIE（整段 Cookie 头）、DOUYIN_PLAYWRIGHT_PROXY（单条代理 URL）
+排障：DOUYIN_PLAYWRIGHT_DEBUG=1 失败时在 stderr 打诊断 JSON；DOUYIN_PLAYWRIGHT_WARMUP=1 先打开 m.douyin.com 再跳短链（机房 IP 可试）。
 
 与 douyin_fetch.py 相同签名，供调度器按环境变量择优加载。
 
@@ -111,20 +112,45 @@ def _extract_comment_count_from_html(html: str) -> int | None:
     return max(int(x) for x in matches)
 
 
-def _pw_collect_response_digg(response: Any, bucket: list[int]) -> None:
+def _strip_xssi_json_prefix(raw: str) -> str:
+    s = raw.strip()
+    for prefix in ("while(1);", "for(;;);", ")]}'"):
+        if s.startswith(prefix):
+            s = s[len(prefix) :].lstrip()
+            break
+    return s
+
+
+def _pw_collect_response_digg(
+    response: Any, bucket: list[int], diag_urls: list[str] | None
+) -> None:
     """收集页面加载过程中 XHR/fetch 返回的 JSON 中的 digg（与真实客户端一致，常比首屏 HTML 可靠）。"""
     try:
         if response.status != 200:
             return
         req = response.request
-        if req.resource_type not in ("xhr", "fetch"):
-            return
+        rt = req.resource_type
         u = (response.url or "").lower()
-        if "douyin" not in u and "iesdouyin" not in u and "amemv" not in u:
+        apiish = any(
+            x in u
+            for x in (
+                "iteminfo",
+                "aweme/v1",
+                "aweme/v2",
+                "web/api",
+                "/aweme/detail",
+                "multi/aweme",
+                "aweme_id=",
+                "item_ids=",
+            )
+        )
+        if not apiish and rt not in ("xhr", "fetch", "other"):
+            return
+        if "douyin" not in u and "iesdouyin" not in u and "amemv" not in u and "snssdk" not in u:
             return
         ct = (response.headers.get("content-type") or "").lower()
         if "json" not in ct and "text/plain" not in ct and "javascript" not in ct:
-            if not any(x in u for x in ("aweme", "iteminfo", "web/api", "item_id")):
+            if not apiish:
                 return
         try:
             body = response.text()
@@ -134,8 +160,10 @@ def _pw_collect_response_digg(response: Any, bucket: list[int]) -> None:
             "digg_count" not in body and "like_count" not in body and '"statistics"' not in body
         ):
             return
+        if diag_urls is not None and len(diag_urls) < 48:
+            diag_urls.append(response.url[:240])
         try:
-            data = json.loads(body)
+            data = json.loads(_strip_xssi_json_prefix(body))
             d = _digg_from_item_api_json(data)
             if d is not None:
                 bucket.append(int(d))
@@ -152,6 +180,51 @@ def _net_digg_best(bucket: list[int]) -> int | None:
     return max(bucket) if bucket else None
 
 
+def _debug_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _playwright_failure_diag(
+    page: Any, html: str, net_diggs: list[int], diag_urls: list[str], has_cookie: bool
+) -> None:
+    """.stderr 输出一行 JSON，便于区分：机房空壳页 / 无 XHR 数据 / Cookie 未带上等。"""
+    import sys
+
+    title = ""
+    try:
+        title = (page.title() or "")[:200]
+    except Exception:
+        pass
+    final_url = ""
+    try:
+        final_url = page.url or ""
+    except Exception:
+        pass
+    low = html.lower()
+    hints: dict[str, bool] = {
+        "maybe_verify": any(
+            w in low
+            for w in ("验证码", "验证", "安全验证", "captcha", "slider", "拖动", "访问异常")
+        ),
+        "maybe_empty_shell": "digg_count" not in html and "aweme_id" not in html and len(html) < 8000,
+    }
+    payload = {
+        "playwright_debug": True,
+        "final_url": final_url[:400],
+        "title": title,
+        "html_chars": len(html),
+        "net_digg_samples": len(net_diggs),
+        "xhr_urls_seen": len(diag_urls),
+        "xhr_url_sample": diag_urls[:8],
+        "do_have_cookie_header": has_cookie,
+        "hints": hints,
+    }
+    try:
+        print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[str, Any]:
     """仅在子进程中调用：一次 with 块内完成 launch → 抓取 → 关闭。"""
     url = _pick_short_share_url(url.strip())
@@ -161,6 +234,8 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
     cookie_header = os.getenv("DOUYIN_COOKIE", "").strip()
     proxy = os.getenv("DOUYIN_PLAYWRIGHT_PROXY", "").strip() or None
     proxy_cfg: dict[str, Any] | None = {"server": proxy} if proxy else None
+    want_debug = _debug_truthy("DOUYIN_PLAYWRIGHT_DEBUG")
+    want_warmup = _debug_truthy("DOUYIN_PLAYWRIGHT_WARMUP")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -190,10 +265,24 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
 
             page = context.new_page()
             net_diggs: list[int] = []
-            page.on("response", lambda r: _pw_collect_response_digg(r, net_diggs))
+            diag_urls: list[str] | None = [] if want_debug else None
+            page.on(
+                "response",
+                lambda r: _pw_collect_response_digg(r, net_diggs, diag_urls),
+            )
             try:
                 time.sleep(random.uniform(0.8, 2.8))
-                page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+                if want_warmup:
+                    try:
+                        page.goto(
+                            "https://m.douyin.com/",
+                            wait_until="domcontentloaded",
+                            timeout=25_000,
+                        )
+                        time.sleep(random.uniform(0.4, 1.2))
+                    except Exception:
+                        pass
+                page.goto(url, wait_until="load", timeout=90_000)
                 time.sleep(random.uniform(0.5, 1.5))
                 try:
                     page.wait_for_load_state("networkidle", timeout=12_000)
@@ -274,6 +363,14 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
                         "latest_comment": None,
                         "html": html[:500000],
                     }
+                if want_debug:
+                    _playwright_failure_diag(
+                        page,
+                        html,
+                        net_diggs,
+                        diag_urls if diag_urls is not None else [],
+                        bool(cookie_header),
+                    )
                 raise ValueError(
                     "Playwright 页面中未解析到 digg_count（可能遇验证页或链接失效）"
                 )
