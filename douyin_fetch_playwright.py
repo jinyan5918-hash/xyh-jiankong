@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from douyin_fetch import _extract_item_id, _fetch_likes_by_item_api
+
 # 与 douyin_fetch._DIGG_PATTERNS 保持一致，避免仅 Playwright 路径漏解析
 _DIGG_PATTERNS = (
     re.compile(r'"digg_count"\s*:\s*(\d+)'),
@@ -45,6 +47,17 @@ def _pick_short_share_url(raw: str) -> str:
     if not hits:
         return raw
     return f"https://v.douyin.com/{hits[-1]}/"
+
+
+_HOME_ONLY = frozenset({"https://www.douyin.com", "https://douyin.com"})
+
+
+def _item_api_likes(final_url: str, html: str) -> int | None:
+    """与 douyin_fetch._fetch_likes_once 一致：从落地页解析 aweme_id 后走 iteminfo 等接口（复用 DOUYIN_COOKIE）。"""
+    item_id = _extract_item_id(final_url, html)
+    if not item_id:
+        return None
+    return _fetch_likes_by_item_api(item_id, insecure_ssl=False)
 
 
 _UA_MOBILE = (
@@ -160,6 +173,16 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
                         "latest_comment": None,
                         "html": html[:500000],
                     }
+                if page.url.rstrip("/") in _HOME_ONLY:
+                    raise ValueError("短链已失效或不是视频链接（跳转到抖音首页）")
+                api_likes = _item_api_likes(page.url, html)
+                if api_likes is not None:
+                    return {
+                        "likes": api_likes,
+                        "comment_count": cc,
+                        "latest_comment": None,
+                        "html": html[:500000],
+                    }
                 page.wait_for_timeout(3000)
                 try:
                     page.wait_for_load_state("networkidle", timeout=12_000)
@@ -178,6 +201,16 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
                 if not require_likes:
                     return {
                         "likes": 0,
+                        "comment_count": cc,
+                        "latest_comment": None,
+                        "html": html[:500000],
+                    }
+                if page.url.rstrip("/") in _HOME_ONLY:
+                    raise ValueError("短链已失效或不是视频链接（跳转到抖音首页）")
+                api_likes = _item_api_likes(page.url, html)
+                if api_likes is not None:
+                    return {
+                        "likes": api_likes,
                         "comment_count": cc,
                         "latest_comment": None,
                         "html": html[:500000],
@@ -202,7 +235,7 @@ def fetch_likes(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = T
 
     def _run_sub() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(script), "--pw-author-child"],
+            [sys.executable, str(script), "--pw-child"],
             input=url,
             capture_output=True,
             text=True,
