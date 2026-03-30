@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from douyin_fetch import _extract_item_id, _fetch_likes_by_item_api
+from douyin_fetch import _digg_from_item_api_json, _extract_item_id, _fetch_likes_by_item_api
 
 # 与 douyin_fetch._DIGG_PATTERNS 保持一致，避免仅 Playwright 路径漏解析
 _DIGG_PATTERNS = (
@@ -111,6 +111,47 @@ def _extract_comment_count_from_html(html: str) -> int | None:
     return max(int(x) for x in matches)
 
 
+def _pw_collect_response_digg(response: Any, bucket: list[int]) -> None:
+    """收集页面加载过程中 XHR/fetch 返回的 JSON 中的 digg（与真实客户端一致，常比首屏 HTML 可靠）。"""
+    try:
+        if response.status != 200:
+            return
+        req = response.request
+        if req.resource_type not in ("xhr", "fetch"):
+            return
+        u = (response.url or "").lower()
+        if "douyin" not in u and "iesdouyin" not in u and "amemv" not in u:
+            return
+        ct = (response.headers.get("content-type") or "").lower()
+        if "json" not in ct and "text/plain" not in ct and "javascript" not in ct:
+            if not any(x in u for x in ("aweme", "iteminfo", "web/api", "item_id")):
+                return
+        try:
+            body = response.text()
+        except Exception:
+            return
+        if len(body) > 4_000_000 or (
+            "digg_count" not in body and "like_count" not in body and '"statistics"' not in body
+        ):
+            return
+        try:
+            data = json.loads(body)
+            d = _digg_from_item_api_json(data)
+            if d is not None:
+                bucket.append(int(d))
+        except Exception:
+            pass
+        alt = _extract_likes_from_html(body)
+        if alt is not None:
+            bucket.append(int(alt))
+    except Exception:
+        pass
+
+
+def _net_digg_best(bucket: list[int]) -> int | None:
+    return max(bucket) if bucket else None
+
+
 def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[str, Any]:
     """仅在子进程中调用：一次 with 块内完成 launch → 抓取 → 关闭。"""
     url = _pick_short_share_url(url.strip())
@@ -148,6 +189,8 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
             context.set_extra_http_headers(headers)
 
             page = context.new_page()
+            net_diggs: list[int] = []
+            page.on("response", lambda r: _pw_collect_response_digg(r, net_diggs))
             try:
                 time.sleep(random.uniform(0.8, 2.8))
                 page.goto(url, wait_until="domcontentloaded", timeout=90_000)
@@ -169,6 +212,14 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
                 if not require_likes:
                     return {
                         "likes": 0,
+                        "comment_count": cc,
+                        "latest_comment": None,
+                        "html": html[:500000],
+                    }
+                nd = _net_digg_best(net_diggs)
+                if nd is not None:
+                    return {
+                        "likes": nd,
                         "comment_count": cc,
                         "latest_comment": None,
                         "html": html[:500000],
@@ -201,6 +252,14 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
                 if not require_likes:
                     return {
                         "likes": 0,
+                        "comment_count": cc,
+                        "latest_comment": None,
+                        "html": html[:500000],
+                    }
+                nd = _net_digg_best(net_diggs)
+                if nd is not None:
+                    return {
+                        "likes": nd,
                         "comment_count": cc,
                         "latest_comment": None,
                         "html": html[:500000],
