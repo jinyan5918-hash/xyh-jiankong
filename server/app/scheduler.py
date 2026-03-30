@@ -141,6 +141,7 @@ class MonitorScheduler:
                     .options(joinedload(MonitorTask.user))
                     .filter(
                         MonitorTask.enabled.is_(True),
+                        MonitorTask.task_paused.is_(False),
                         User.monitoring_active.is_(True),
                         User.monitoring_paused.is_(False),
                     )

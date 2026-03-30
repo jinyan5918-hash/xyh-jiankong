@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.5"
+CLIENT_VERSION_FALLBACK = "1.2.6"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -402,6 +402,17 @@ class App:
         self.status_var = tk.StringVar(value="状态：未登录")
         self._wecom_blocked = False
         self._widgets_need_wecom: list[tk.Widget] = []
+        self._tasks_cache: list[dict] = []
+        self._task_sort_labels = (
+            "ID 新→旧",
+            "ID 旧→新",
+            "目标点赞 高→低",
+            "目标点赞 低→高",
+            "当前点赞 高→低",
+            "当前点赞 低→高",
+        )
+        self._task_sort_var = tk.StringVar(value=self._task_sort_labels[0])
+        self._task_sort_combo: ttk.Combobox | None = None
 
         self._ctx_menu = None
         self._welcome_fr: tk.Frame | None = None
@@ -654,24 +665,65 @@ class App:
             b.pack(side="left", **pad)
             self._widgets_need_wecom.append(b)
 
+        task_row2 = ttk.Frame(self._main_fr, padding=(12, 0, 12, 6))
+        task_row2.pack(fill="x")
+        ttk.Label(
+            task_row2,
+            text=(
+                "单任务：选中表格一行后，可「暂停任务」（仅停这一条）、「恢复任务」、「停用任务」（长期不参与检测）、"
+                "「启用任务」。列表中「任务状态」为中文；「当前点赞」为服务端最近一次成功爬取到的数量。"
+            ),
+            font=_ui_font(9),
+            foreground=_THEME["muted"],
+            wraplength=1000,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        task_btns = ttk.Frame(task_row2)
+        task_btns.pack(anchor="w")
+        for txt, cmd in [
+            ("暂停任务", self.task_pause_selected),
+            ("恢复任务", self.task_resume_selected),
+            ("停用任务", self.task_disable_selected),
+            ("启用任务", self.task_enable_selected),
+        ]:
+            b = ttk.Button(task_btns, text=txt, command=cmd)
+            b.pack(side="left", padx=(0, 8))
+            self._widgets_need_wecom.append(b)
+
         table_wrap = ttk.Frame(self._main_fr, padding=(12, 0, 12, 8))
         table_wrap.pack(fill="both", expand=True)
+        sort_bar = ttk.Frame(table_wrap)
+        sort_bar.pack(fill="x", pady=(0, 6))
+        ttk.Label(sort_bar, text="列表排序").pack(side="left", padx=(0, 8))
+        self._task_sort_combo = ttk.Combobox(
+            sort_bar,
+            textvariable=self._task_sort_var,
+            values=list(self._task_sort_labels),
+            state="readonly",
+            width=20,
+        )
+        self._task_sort_combo.pack(side="left")
+        self._task_sort_combo.bind("<<ComboboxSelected>>", self._on_task_sort_change)
+        self._widgets_need_wecom.append(self._task_sort_combo)
+
         self.tree = ttk.Treeview(
             table_wrap,
-            columns=("id", "name", "url", "target", "enabled"),
+            columns=("id", "name", "url", "current", "target", "status"),
             show="headings",
             height=12,
         )
         self.tree.heading("id", text="ID")
         self.tree.heading("name", text="名称")
         self.tree.heading("url", text="视频链接（右键复制/打开；双击打开）")
+        self.tree.heading("current", text="当前点赞")
         self.tree.heading("target", text="目标点赞")
-        self.tree.heading("enabled", text="启用")
-        self.tree.column("id", width=50)
-        self.tree.column("name", width=120)
-        self.tree.column("url", width=560)
-        self.tree.column("target", width=90)
-        self.tree.column("enabled", width=70)
+        self.tree.heading("status", text="任务状态")
+        self.tree.column("id", width=48)
+        self.tree.column("name", width=100)
+        self.tree.column("url", width=440)
+        self.tree.column("current", width=72)
+        self.tree.column("target", width=72)
+        self.tree.column("status", width=80)
         self.tree.pack(fill="both", expand=True)
         self._widgets_need_wecom.append(self.tree)
         self.tree.bind("<<TreeviewSelect>>", self.on_select_task)
@@ -692,6 +744,11 @@ class App:
         )
         self._ctx_menu.add_command(label="复制视频链接", command=self._ctx_copy_url)
         self._ctx_menu.add_command(label="在浏览器中打开链接", command=self._ctx_open_url)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="暂停此任务", command=self.task_pause_selected)
+        self._ctx_menu.add_command(label="恢复此任务", command=self.task_resume_selected)
+        self._ctx_menu.add_command(label="停用此任务", command=self.task_disable_selected)
+        self._ctx_menu.add_command(label="启用此任务", command=self.task_enable_selected)
 
         log_fr = ttk.LabelFrame(
             self._main_fr,
@@ -813,6 +870,143 @@ class App:
                     return
             except (ValueError, TypeError):
                 continue
+
+    def _current_sort_key(self) -> str:
+        m = {
+            self._task_sort_labels[0]: "id_desc",
+            self._task_sort_labels[1]: "id_asc",
+            self._task_sort_labels[2]: "target_desc",
+            self._task_sort_labels[3]: "target_asc",
+            self._task_sort_labels[4]: "current_desc",
+            self._task_sort_labels[5]: "current_asc",
+        }
+        return m.get(self._task_sort_var.get(), "id_desc")
+
+    def _on_task_sort_change(self, _event=None):
+        self._render_task_rows(self._tasks_cache)
+
+    def _fmt_current_likes_cell(self, v) -> str:
+        if v is None:
+            return "—"
+        try:
+            return str(int(v))
+        except (TypeError, ValueError):
+            return "—"
+
+    def _task_row_status(self, item: dict) -> str:
+        en = bool(item.get("enabled", True))
+        pau = bool(item.get("task_paused", False))
+        if not en:
+            return "已停用"
+        if pau:
+            return "已暂停"
+        return "监控中"
+
+    def _sort_tasks_list(self, items: list[dict]) -> list[dict]:
+        k = self._current_sort_key()
+        if k == "id_desc":
+            return sorted(items, key=lambda x: int(x["id"]), reverse=True)
+        if k == "id_asc":
+            return sorted(items, key=lambda x: int(x["id"]), reverse=False)
+        if k == "target_desc":
+            return sorted(items, key=lambda x: int(x["target_likes"]), reverse=True)
+        if k == "target_asc":
+            return sorted(items, key=lambda x: int(x["target_likes"]), reverse=False)
+        if k == "current_desc":
+            return sorted(
+                items,
+                key=lambda x: (
+                    0 if x.get("current_likes") is not None else 1,
+                    -(int(x["current_likes"]) if x.get("current_likes") is not None else 0),
+                ),
+            )
+        if k == "current_asc":
+            return sorted(
+                items,
+                key=lambda x: (
+                    0 if x.get("current_likes") is not None else 1,
+                    int(x["current_likes"]) if x.get("current_likes") is not None else 0,
+                ),
+            )
+        return list(items)
+
+    def _render_task_rows(self, items: list[dict]) -> None:
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        ordered = self._sort_tasks_list(list(items))
+        for item in ordered:
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    item["id"],
+                    item["name"],
+                    item["video_url"],
+                    self._fmt_current_likes_cell(item.get("current_likes")),
+                    item["target_likes"],
+                    self._task_row_status(item),
+                ),
+            )
+
+    def _selected_task_id(self) -> int | None:
+        selected = self.tree.selection()
+        if not selected:
+            return None
+        values = self.tree.item(selected[0], "values")
+        if not values:
+            return None
+        try:
+            return int(values[0])
+        except (TypeError, ValueError):
+            return None
+
+    def _patch_task(self, task_id: int, payload: dict) -> bool:
+        if not self.token:
+            messagebox.showinfo("提示", "请先登录")
+            return False
+        try:
+            r = requests.patch(
+                f"{self.api_base}/tasks/{task_id}",
+                json=payload,
+                headers=self._headers(),
+                timeout=15,
+            )
+            if r.status_code != 200:
+                messagebox.showerror("操作失败", self._api_error_detail(r))
+                return False
+            self.refresh_tasks()
+            return True
+        except Exception as e:
+            messagebox.showerror("操作失败", str(e))
+            return False
+
+    def task_pause_selected(self):
+        tid = self._selected_task_id()
+        if tid is None:
+            messagebox.showinfo("提示", "请先选中一个任务")
+            return
+        self._patch_task(tid, {"task_paused": True})
+
+    def task_resume_selected(self):
+        tid = self._selected_task_id()
+        if tid is None:
+            messagebox.showinfo("提示", "请先选中一个任务")
+            return
+        self._patch_task(tid, {"task_paused": False})
+
+    def task_disable_selected(self):
+        tid = self._selected_task_id()
+        if tid is None:
+            messagebox.showinfo("提示", "请先选中一个任务")
+            return
+        self._patch_task(tid, {"enabled": False, "task_paused": False})
+
+    def task_enable_selected(self):
+        tid = self._selected_task_id()
+        if tid is None:
+            messagebox.showinfo("提示", "请先选中一个任务")
+            return
+        self._patch_task(tid, {"enabled": True, "task_paused": False})
 
     def _api_error_detail(self, r: requests.Response) -> str:
         try:
@@ -1171,20 +1365,9 @@ class App:
             if r.status_code != 200:
                 messagebox.showerror("获取任务失败", self._api_error_detail(r))
                 return
-            for row in self.tree.get_children():
-                self.tree.delete(row)
-            for item in r.json():
-                self.tree.insert(
-                    "",
-                    "end",
-                    values=(
-                        item["id"],
-                        item["name"],
-                        item["video_url"],
-                        item["target_likes"],
-                        item["enabled"],
-                    ),
-                )
+            items = r.json()
+            self._tasks_cache = items
+            self._render_task_rows(items)
         except Exception as e:
             messagebox.showerror("获取任务失败", str(e))
 
@@ -1224,11 +1407,11 @@ class App:
         if not selected:
             return
         values = self.tree.item(selected[0], "values")
-        if len(values) < 5:
+        if len(values) < 6:
             return
         self.name_var.set(str(values[1]))
         self.url_var.set(str(values[2]))
-        self.target_var.set(str(values[3]))
+        self.target_var.set(str(values[4]))
 
     def update_selected_task(self):
         if not self.token:

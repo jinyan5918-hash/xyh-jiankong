@@ -60,6 +60,8 @@ class MonitorTask(Base):
     video_url: Mapped[str] = mapped_column(Text)
     target_likes: Mapped[int] = mapped_column(Integer)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 单任务暂停：仍为启用任务，但调度器跳过，直至恢复（与 enabled=False 长期停用区分）
+    task_paused: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     user: Mapped["User"] = relationship(back_populates="monitor_tasks")

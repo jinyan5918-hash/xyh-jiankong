@@ -88,6 +88,15 @@ def _run_lightweight_migrations() -> None:
             conn.execute(text("UPDATE users SET admin_role = 'main' WHERE username = 'admin'"))
         if "devices" in insp.get_table_names():
             conn.execute(text("UPDATE devices SET is_active = 1 WHERE is_active IS NULL"))
+        if "monitor_tasks" in insp.get_table_names():
+            mtcols = {c["name"] for c in insp.get_columns("monitor_tasks")}
+            if "task_paused" not in mtcols:
+                conn.execute(
+                    text("ALTER TABLE monitor_tasks ADD COLUMN task_paused BOOLEAN DEFAULT 0")
+                )
+            conn.execute(
+                text("UPDATE monitor_tasks SET task_paused = 0 WHERE task_paused IS NULL")
+            )
 
 
 def _ensure_admin() -> None:
@@ -278,6 +287,26 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     return TokenResponse(access_token=token, admin_role=role)
 
 
+def _latest_success_likes_by_task(db: Session, task_ids: list[int]) -> dict[int, int]:
+    if not task_ids:
+        return {}
+    rows = (
+        db.query(MonitorRecord.task_id, MonitorRecord.likes)
+        .filter(
+            MonitorRecord.task_id.in_(task_ids),
+            MonitorRecord.success.is_(True),
+            MonitorRecord.likes.isnot(None),
+        )
+        .order_by(MonitorRecord.checked_at.desc())
+        .all()
+    )
+    out: dict[int, int] = {}
+    for tid, likes in rows:
+        if tid not in out and likes is not None:
+            out[tid] = int(likes)
+    return out
+
+
 @app.get("/tasks", response_model=list[TaskOut])
 def list_tasks(
     current_user: User = Depends(get_current_user),
@@ -289,7 +318,32 @@ def list_tasks(
         .order_by(MonitorTask.id.desc())
         .all()
     )
-    return tasks
+    st = scheduler.status().get("states") or {}
+    tids = [t.id for t in tasks]
+    latest = _latest_success_likes_by_task(db, tids)
+    result: list[TaskOut] = []
+    for t in tasks:
+        sid = st.get(t.id) or {}
+        raw = sid.get("last_likes")
+        cur: int | None
+        if raw is not None:
+            cur = int(raw)
+        elif t.id in latest:
+            cur = latest[t.id]
+        else:
+            cur = None
+        result.append(
+            TaskOut(
+                id=t.id,
+                name=t.name,
+                video_url=t.video_url,
+                target_likes=t.target_likes,
+                enabled=t.enabled,
+                task_paused=bool(t.task_paused),
+                current_likes=cur,
+            )
+        )
+    return result
 
 
 @app.post("/tasks", response_model=TaskOut)

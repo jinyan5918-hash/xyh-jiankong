@@ -145,6 +145,7 @@ class TaskUpdate(BaseModel):
     video_url: str | None = Field(default=None, min_length=10, max_length=1024)
     target_likes: int | None = Field(default=None, gt=0)
     enabled: bool | None = None
+    task_paused: bool | None = None
 
 
 class TaskOut(BaseModel):
@@ -153,6 +154,9 @@ class TaskOut(BaseModel):
     video_url: str
     target_likes: int
     enabled: bool
+    task_paused: bool = False
+    # 优先调度器内存中的最近一次成功点赞；否则为库中该任务最近一次成功检测的点赞
+    current_likes: int | None = None
 
     class Config:
         from_attributes = True
