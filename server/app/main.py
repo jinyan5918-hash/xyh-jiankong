@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine
 from .deps import get_current_user, get_db
-from .models import Device, MonitorRecord, MonitorTask, ReachAlert, StaffGroup, User
+from .models import CommentAlert, Device, MonitorRecord, MonitorTask, ReachAlert, StaffGroup, User
 from .urlnorm import normalize_douyin_url_safe
 from .schemas import (
     AdminDeviceOut,
@@ -25,6 +25,7 @@ from .schemas import (
     PaginatedDevicesOut,
     PaginatedRecordsOut,
     PaginatedUsersOut,
+    AlertOut,
     ReachAlertOut,
     RecordOut,
     TaskCreate,
@@ -101,6 +102,31 @@ def _run_lightweight_migrations() -> None:
             conn.execute(
                 text("UPDATE monitor_tasks SET task_paused = 0 WHERE task_paused IS NULL")
             )
+            if "notify_step_likes" not in mtcols:
+                conn.execute(
+                    text("ALTER TABLE monitor_tasks ADD COLUMN notify_step_likes INTEGER DEFAULT 10")
+                )
+            if "last_notified_likes" not in mtcols:
+                conn.execute(
+                    text("ALTER TABLE monitor_tasks ADD COLUMN last_notified_likes INTEGER")
+                )
+            if "last_comment_count" not in mtcols:
+                conn.execute(
+                    text("ALTER TABLE monitor_tasks ADD COLUMN last_comment_count INTEGER")
+                )
+            if "last_comment_sig" not in mtcols:
+                conn.execute(
+                    text("ALTER TABLE monitor_tasks ADD COLUMN last_comment_sig TEXT")
+                )
+            conn.execute(
+                text("UPDATE monitor_tasks SET notify_step_likes = 10 WHERE notify_step_likes IS NULL")
+            )
+        if "monitor_records" in insp.get_table_names():
+            mrcols = {c["name"] for c in insp.get_columns("monitor_records")}
+            if "comment_count" not in mrcols:
+                conn.execute(text("ALTER TABLE monitor_records ADD COLUMN comment_count INTEGER"))
+            if "latest_comment" not in mrcols:
+                conn.execute(text("ALTER TABLE monitor_records ADD COLUMN latest_comment TEXT"))
         if "staff_groups" in insp.get_table_names():
             g_rows = conn.execute(
                 text(
@@ -385,6 +411,7 @@ def list_tasks(
     for t in tasks:
         sid = st.get(t.id) or {}
         raw = sid.get("last_likes")
+        raw_cc = sid.get("last_comment_count")
         cur: int | None
         if raw is not None:
             cur = int(raw)
@@ -392,6 +419,10 @@ def list_tasks(
             cur = latest[t.id]
         else:
             cur = None
+        try:
+            cc = int(raw_cc) if raw_cc is not None else None
+        except Exception:
+            cc = None
         result.append(
             TaskOut(
                 id=t.id,
@@ -400,7 +431,9 @@ def list_tasks(
                 target_likes=t.target_likes,
                 enabled=t.enabled,
                 task_paused=bool(t.task_paused),
+                notify_step_likes=int(getattr(t, "notify_step_likes", 10) or 10),
                 current_likes=cur,
+                comment_count=cc,
             )
         )
     return result
@@ -420,7 +453,8 @@ def create_task(
         user_id=current_user.id,
         name=payload.name,
         video_url=video_url,
-        target_likes=payload.target_likes,
+        target_likes=int(payload.target_likes or 0),
+        notify_step_likes=int(payload.notify_step_likes or 0),
         enabled=payload.enabled,
     )
     db.add(task)
@@ -659,12 +693,12 @@ def my_records(
     ]
 
 
-@app.get("/alerts/unread", response_model=list[ReachAlertOut])
+@app.get("/alerts/unread", response_model=list[AlertOut])
 def alerts_unread(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    rows = (
+    like_rows = (
         db.query(ReachAlert, MonitorTask.video_url)
         .outerjoin(
             MonitorTask,
@@ -679,20 +713,50 @@ def alerts_unread(
         .limit(50)
         .all()
     )
-    out: list[ReachAlertOut] = []
-    for a, vurl in rows:
+    comment_rows = (
+        db.query(CommentAlert, MonitorTask.video_url)
+        .outerjoin(
+            MonitorTask,
+            (MonitorTask.id == CommentAlert.task_id)
+            & (MonitorTask.user_id == CommentAlert.user_id),
+        )
+        .filter(
+            CommentAlert.user_id == current_user.id,
+            CommentAlert.acknowledged.is_(False),
+        )
+        .order_by(CommentAlert.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    out: list[AlertOut] = []
+    for a, vurl in like_rows:
         out.append(
-            ReachAlertOut(
+            AlertOut(
                 id=a.id,
+                type="like_step",
                 task_id=a.task_id,
                 task_name=a.task_name,
-                likes=a.likes,
-                target_likes=a.target_likes,
                 created_at=a.created_at,
                 video_url=(vurl or None),
+                likes=a.likes,
+                step_likes=a.target_likes,
             )
         )
-    return out
+    for a, vurl in comment_rows:
+        out.append(
+            AlertOut(
+                id=a.id,
+                type="comment",
+                task_id=a.task_id,
+                task_name=a.task_name,
+                created_at=a.created_at,
+                video_url=(vurl or None),
+                comment_count=a.comment_count,
+                comment_snippet=a.comment_snippet,
+            )
+        )
+    out.sort(key=lambda x: x.created_at, reverse=True)
+    return out[:50]
 
 
 @app.post("/alerts/{alert_id}/ack")
@@ -701,20 +765,30 @@ def alert_ack(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    alert = (
+    like = (
         db.query(ReachAlert)
         .filter(ReachAlert.id == alert_id, ReachAlert.user_id == current_user.id)
         .first()
     )
-    if not alert:
+    if like:
+        like.acknowledged = True
+        db.commit()
+        return {"ok": True}
+    ca = (
+        db.query(CommentAlert)
+        .filter(CommentAlert.id == alert_id, CommentAlert.user_id == current_user.id)
+        .first()
+    )
+    if not ca:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    alert.acknowledged = True
+    ca.acknowledged = True
     db.commit()
     return {"ok": True}
 
 
 def _purge_user_data(db: Session, uid: int) -> None:
     db.query(ReachAlert).filter(ReachAlert.user_id == uid).delete(synchronize_session=False)
+    db.query(CommentAlert).filter(CommentAlert.user_id == uid).delete(synchronize_session=False)
     db.query(Device).filter(Device.user_id == uid).delete(synchronize_session=False)
     for t in db.query(MonitorTask).filter(MonitorTask.user_id == uid).all():
         db.delete(t)

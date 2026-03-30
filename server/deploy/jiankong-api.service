@@ -1,3 +1,17 @@
+# 企业版抖音监控 — API（uvicorn）
+#
+# 安装（在服务器上执行，路径按实际修改）：
+#   sudo cp /home/ubuntu/jiankong/server/deploy/jiankong-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now jiankong-api
+#
+# 常用：
+#   sudo systemctl status jiankong-api
+#   sudo systemctl restart jiankong-api   # 代码 git pull 后用这条，不要用 kill
+#   sudo systemctl stop jiankong-api
+#
+# 更新代码后：cd /home/ubuntu/jiankong && git pull && sudo systemctl restart jiankong-api
+
 [Unit]
 Description=Jiankong FastAPI (uvicorn)
 After=network.target
@@ -12,7 +26,8 @@ Environment=PYTHONUNBUFFERED=1
 # Environment=DOUYIN_COOKIE=msToken=xxx; ttwid=xxx; ...
 # 或使用住宅代理列表（逗号分隔）：Environment=DOUYIN_PROXY_POOL=http://user:pass@host:port,...
 ExecStart=/home/ubuntu/jiankong/.venv-enterprise/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
-Restart=always
+# 进程异常退出时重启；正常 stop 不会自动拉起。若需崩溃/杀进程也必自动重建可改为 Restart=always
+Restart=on-failure
 RestartSec=5
 
 [Install]

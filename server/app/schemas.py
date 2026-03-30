@@ -152,6 +152,8 @@ class RecordOut(BaseModel):
     task_id: int
     checked_at: datetime
     likes: int | None
+    comment_count: int | None = None
+    latest_comment: str | None = None
     success: bool
     error_message: str
 
@@ -169,30 +171,51 @@ class PaginatedRecordsOut(BaseModel):
 class TaskCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     video_url: str = Field(min_length=10, max_length=1024)
-    target_likes: int = Field(gt=0)
+    # 旧字段：历史上为目标点赞。新客户端不再展示，但为兼容保留。
+    target_likes: int = Field(default=0, ge=0)
     enabled: bool = True
+    # 每增长多少赞提醒；<=0 表示不提醒
+    notify_step_likes: int = Field(default=10, ge=0, le=1_000_000)
 
 
 class TaskUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     video_url: str | None = Field(default=None, min_length=10, max_length=1024)
-    target_likes: int | None = Field(default=None, gt=0)
+    target_likes: int | None = Field(default=None, ge=0)
     enabled: bool | None = None
     task_paused: bool | None = None
+    notify_step_likes: int | None = Field(default=None, ge=0, le=1_000_000)
 
 
 class TaskOut(BaseModel):
     id: int
     name: str
     video_url: str
-    target_likes: int
+    target_likes: int = 0
     enabled: bool
     task_paused: bool = False
+    notify_step_likes: int = 10
     # 优先调度器内存中的最近一次成功点赞；否则为库中该任务最近一次成功检测的点赞
     current_likes: int | None = None
+    comment_count: int | None = None
 
     class Config:
         from_attributes = True
+
+
+class AlertOut(BaseModel):
+    """客户端轮询提醒（点赞步长提醒 / 新评论提醒）。"""
+
+    id: int
+    type: str  # like_step | comment
+    task_id: int
+    task_name: str
+    created_at: datetime
+    video_url: str | None = None
+    likes: int | None = None
+    step_likes: int | None = None
+    comment_count: int | None = None
+    comment_snippet: str | None = None
 
 
 class MonitorStatusOut(BaseModel):

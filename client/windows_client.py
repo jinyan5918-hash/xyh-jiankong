@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.6"
+CLIENT_VERSION_FALLBACK = "1.2.7"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -382,7 +382,8 @@ class App:
         self.root = root
         self.api_base = api_base.rstrip("/")
         self.root.title(f"企业版抖音点赞监控客户端 v{get_client_version()}")
-        self.root.geometry("1100x880")
+        # 尽量紧凑：任务表支持滚动，窗口不必很大
+        self.root.geometry("980x720")
         try:
             self.root.configure(background=_THEME["bg"])
         except Exception:
@@ -395,7 +396,8 @@ class App:
         self.password_var = tk.StringVar()
         self.name_var = tk.StringVar()
         self.url_var = tk.StringVar()
-        self.target_var = tk.StringVar()
+        # 设定每增长多少赞提醒（可自定义）
+        self.step_var = tk.StringVar(value="10")
         self.interval_min_var = tk.StringVar(value="180")
         self.interval_max_var = tk.StringVar(value="480")
         self.wecom_webhook_var = tk.StringVar(value=load_local_wecom_pref())
@@ -406,10 +408,10 @@ class App:
         self._task_sort_labels = (
             "ID 新→旧",
             "ID 旧→新",
-            "目标点赞 高→低",
-            "目标点赞 低→高",
             "当前点赞 高→低",
             "当前点赞 低→高",
+            "评论数 高→低",
+            "评论数 低→高",
         )
         self._task_sort_var = tk.StringVar(value=self._task_sort_labels[0])
         self._task_sort_combo: ttk.Combobox | None = None
@@ -651,8 +653,8 @@ class App:
         te2 = ttk.Entry(task_form, textvariable=self.url_var, width=52)
         te2.pack(side="left", padx=(8, 8))
         self._widgets_need_wecom.append(te2)
-        ttk.Label(task_form, text="目标点赞").pack(side="left")
-        te3 = ttk.Entry(task_form, textvariable=self.target_var, width=10)
+        ttk.Label(task_form, text="每增长(赞)提醒").pack(side="left")
+        te3 = ttk.Entry(task_form, textvariable=self.step_var, width=10)
         te3.pack(side="left", padx=(8, 8))
         self._widgets_need_wecom.append(te3)
         for txt, cmd in [
@@ -671,7 +673,7 @@ class App:
             task_row2,
             text=(
                 "单任务：选中表格一行后，可「暂停任务」（仅停这一条）、「恢复任务」、「停用任务」（长期不参与检测）、"
-                "「启用任务」。列表中「任务状态」为中文；「当前点赞」为服务端最近一次成功爬取到的数量。"
+                "「启用任务」。列表中「任务状态」为中文；「当前点赞/评论数」为服务端最近一次成功爬取到的数量。"
             ),
             font=_ui_font(9),
             foreground=_THEME["muted"],
@@ -706,25 +708,35 @@ class App:
         self._task_sort_combo.bind("<<ComboboxSelected>>", self._on_task_sort_change)
         self._widgets_need_wecom.append(self._task_sort_combo)
 
+        tree_shell = ttk.Frame(table_wrap)
+        tree_shell.pack(fill="both", expand=True)
+        ysb = ttk.Scrollbar(tree_shell, orient="vertical")
+        xsb = ttk.Scrollbar(tree_shell, orient="horizontal")
         self.tree = ttk.Treeview(
-            table_wrap,
-            columns=("id", "name", "url", "current", "target", "status"),
+            tree_shell,
+            columns=("id", "name", "url", "current", "comments", "status"),
             show="headings",
             height=12,
+            yscrollcommand=ysb.set,
+            xscrollcommand=xsb.set,
         )
+        ysb.config(command=self.tree.yview)
+        xsb.config(command=self.tree.xview)
+        ysb.pack(side="right", fill="y")
+        xsb.pack(side="bottom", fill="x")
+        self.tree.pack(side="left", fill="both", expand=True)
         self.tree.heading("id", text="ID")
         self.tree.heading("name", text="名称")
         self.tree.heading("url", text="视频链接（右键复制/打开；双击打开）")
         self.tree.heading("current", text="当前点赞")
-        self.tree.heading("target", text="目标点赞")
+        self.tree.heading("comments", text="评论数")
         self.tree.heading("status", text="任务状态")
         self.tree.column("id", width=48)
         self.tree.column("name", width=100)
-        self.tree.column("url", width=440)
+        self.tree.column("url", width=520)
         self.tree.column("current", width=72)
-        self.tree.column("target", width=72)
+        self.tree.column("comments", width=72)
         self.tree.column("status", width=80)
-        self.tree.pack(fill="both", expand=True)
         self._widgets_need_wecom.append(self.tree)
         self.tree.bind("<<TreeviewSelect>>", self.on_select_task)
         self.tree.bind("<Double-1>", self._tree_double_click)
@@ -875,10 +887,10 @@ class App:
         m = {
             self._task_sort_labels[0]: "id_desc",
             self._task_sort_labels[1]: "id_asc",
-            self._task_sort_labels[2]: "target_desc",
-            self._task_sort_labels[3]: "target_asc",
-            self._task_sort_labels[4]: "current_desc",
-            self._task_sort_labels[5]: "current_asc",
+            self._task_sort_labels[2]: "current_desc",
+            self._task_sort_labels[3]: "current_asc",
+            self._task_sort_labels[4]: "comment_desc",
+            self._task_sort_labels[5]: "comment_asc",
         }
         return m.get(self._task_sort_var.get(), "id_desc")
 
@@ -908,10 +920,6 @@ class App:
             return sorted(items, key=lambda x: int(x["id"]), reverse=True)
         if k == "id_asc":
             return sorted(items, key=lambda x: int(x["id"]), reverse=False)
-        if k == "target_desc":
-            return sorted(items, key=lambda x: int(x["target_likes"]), reverse=True)
-        if k == "target_asc":
-            return sorted(items, key=lambda x: int(x["target_likes"]), reverse=False)
         if k == "current_desc":
             return sorted(
                 items,
@@ -926,6 +934,22 @@ class App:
                 key=lambda x: (
                     0 if x.get("current_likes") is not None else 1,
                     int(x["current_likes"]) if x.get("current_likes") is not None else 0,
+                ),
+            )
+        if k == "comment_desc":
+            return sorted(
+                items,
+                key=lambda x: (
+                    0 if x.get("comment_count") is not None else 1,
+                    -(int(x["comment_count"]) if x.get("comment_count") is not None else 0),
+                ),
+            )
+        if k == "comment_asc":
+            return sorted(
+                items,
+                key=lambda x: (
+                    0 if x.get("comment_count") is not None else 1,
+                    int(x["comment_count"]) if x.get("comment_count") is not None else 0,
                 ),
             )
         return list(items)
@@ -943,7 +967,7 @@ class App:
                     item["name"],
                     item["video_url"],
                     self._fmt_current_likes_cell(item.get("current_likes")),
-                    item["target_likes"],
+                    self._fmt_current_likes_cell(item.get("comment_count")),
                     self._task_row_status(item),
                 ),
             )
@@ -1331,17 +1355,30 @@ class App:
                         self._seen_alert_ids.add(aid)
                         tid = int(a["task_id"])
                         tname = a.get("task_name") or ""
-                        likes = a.get("likes")
-                        target = a.get("target_likes")
                         vurl = (a.get("video_url") or "").strip()
                         url_short = (vurl[:72] + "…") if len(vurl) > 72 else vurl
-                        title = "点赞已达设定目标"
-                        msg = (
-                            f"任务 #{tid}「{tname}」\n"
-                            f"当前点赞 {likes} ，目标 {target} （已达到或超过）\n"
-                            f"链接：{url_short or '（请在列表中查看）'}\n"
-                            f"打开本客户端窗口时可在列表中看到该任务已高亮。"
-                        )
+                        atype = (a.get("type") or "like_step").strip()
+                        if atype == "comment":
+                            cc = a.get("comment_count")
+                            snippet = (a.get("comment_snippet") or "").strip()
+                            title = "发现新评论"
+                            msg = (
+                                f"任务 #{tid}「{tname}」\n"
+                                f"当前评论数 {cc}\n"
+                                + (f"最新评论：{snippet[:140]}\n" if snippet else "")
+                                + f"链接：{url_short or '（请在列表中查看）'}\n"
+                                + "打开本客户端窗口时可在列表中看到该任务已高亮。"
+                            )
+                        else:
+                            likes = a.get("likes")
+                            step = a.get("step_likes")
+                            title = "点赞增长提醒"
+                            msg = (
+                                f"任务 #{tid}「{tname}」\n"
+                                f"当前点赞 {likes} ，每增长 {step} 赞提醒\n"
+                                f"链接：{url_short or '（请在列表中查看）'}\n"
+                                f"打开本客户端窗口时可在列表中看到该任务已高亮。"
+                            )
                         play_notice_sound()
                         self.root.after(0, lambda tid=tid: self._on_reach_alert(tid))
                         desktop_notify(title, msg)
@@ -1376,9 +1413,11 @@ class App:
             messagebox.showinfo("提示", "请先登录")
             return
         try:
-            target = int(self.target_var.get().strip())
+            step = int(self.step_var.get().strip())
+            if step < 0:
+                raise ValueError()
         except ValueError:
-            messagebox.showerror("参数错误", "目标点赞必须是整数")
+            messagebox.showerror("参数错误", "每增长(赞)提醒 必须是非负整数（0 表示不提醒）")
             return
         try:
             url = normalize_task_url(self.url_var.get())
@@ -1388,7 +1427,8 @@ class App:
         payload = {
             "name": self.name_var.get().strip() or "未命名任务",
             "video_url": url,
-            "target_likes": target,
+            "target_likes": 0,
+            "notify_step_likes": step,
             "enabled": True,
         }
         try:
@@ -1411,7 +1451,18 @@ class App:
             return
         self.name_var.set(str(values[1]))
         self.url_var.set(str(values[2]))
-        self.target_var.set(str(values[4]))
+        try:
+            tid = int(values[0])
+        except Exception:
+            return
+        for it in self._tasks_cache:
+            try:
+                if int(it.get("id")) == tid:
+                    sv = it.get("notify_step_likes", 10)
+                    self.step_var.set(str(int(sv) if sv is not None else 10))
+                    break
+            except Exception:
+                continue
 
     def update_selected_task(self):
         if not self.token:
@@ -1424,9 +1475,11 @@ class App:
         values = self.tree.item(selected[0], "values")
         task_id = int(values[0])
         try:
-            target = int(self.target_var.get().strip())
+            step = int(self.step_var.get().strip())
+            if step < 0:
+                raise ValueError()
         except ValueError:
-            messagebox.showerror("参数错误", "目标点赞必须是整数")
+            messagebox.showerror("参数错误", "每增长(赞)提醒 必须是非负整数（0 表示不提醒）")
             return
         try:
             url = normalize_task_url(self.url_var.get())
@@ -1436,7 +1489,8 @@ class App:
         payload = {
             "name": self.name_var.get().strip() or "未命名任务",
             "video_url": url,
-            "target_likes": target,
+            "target_likes": 0,
+            "notify_step_likes": step,
         }
         try:
             r = requests.patch(

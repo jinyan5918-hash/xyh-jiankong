@@ -65,11 +65,38 @@ def push_reach_alert(
 ) -> None:
     url_short = (video_url[:180] + "…") if len(video_url) > 180 else video_url
     content = (
-        "【抖音点赞监控】点赞已达目标\n"
+        # 兼容历史字段名：target_likes 现语义为 step_likes（每增长多少赞提醒）
+        "【抖音点赞增长提醒】\n"
         f"任务编号：#{task_id}\n"
         f"任务名称：{task_name}\n"
         f"当前点赞：{likes}\n"
-        f"目标点赞：{target_likes}\n"
+        f"每增长：{target_likes} 赞提醒\n"
+        f"视频链接：{url_short}"
+    )
+    send_wecom_text(webhook_url, content)
+
+
+def push_comment_alert(
+    webhook_url: str,
+    *,
+    task_id: int,
+    task_name: str,
+    comment_count: int,
+    video_url: str,
+    comment_snippet: str | None = None,
+) -> None:
+    url_short = (video_url[:180] + "…") if len(video_url) > 180 else video_url
+    snippet = (comment_snippet or "").strip()
+    extra = ""
+    if snippet:
+        snippet = snippet.replace("\r", " ").replace("\n", " ").strip()
+        extra = f"最新评论：{snippet[:140]}\n"
+    content = (
+        "【抖音新评论提醒】\n"
+        f"任务编号：#{task_id}\n"
+        f"任务名称：{task_name}\n"
+        f"当前评论数：{comment_count}\n"
+        f"{extra}"
         f"视频链接：{url_short}"
     )
     send_wecom_text(webhook_url, content)

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 DIGG_PATTERN = re.compile(r'"digg_count"\s*:\s*(\d+)')
+COMMENT_PATTERN = re.compile(r'"comment_count"\s*:\s*(\d+)')
 
 _UA_MOBILE = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
@@ -63,7 +64,14 @@ def _extract_likes_from_html(html: str) -> int | None:
     return max(int(x) for x in matches)
 
 
-def _impl_fetch_in_child_process(url: str) -> int:
+def _extract_comment_count_from_html(html: str) -> int | None:
+    matches = COMMENT_PATTERN.findall(html)
+    if not matches:
+        return None
+    return max(int(x) for x in matches)
+
+
+def _impl_fetch_in_child_process(url: str) -> dict[str, Any]:
     """仅在子进程中调用：一次 with 块内完成 launch → 抓取 → 关闭。"""
     _reset_signals_for_child()
     from playwright.sync_api import sync_playwright
@@ -105,13 +113,15 @@ def _impl_fetch_in_child_process(url: str) -> int:
                 time.sleep(random.uniform(0.5, 1.5))
                 html = page.content()
                 likes = _extract_likes_from_html(html)
+                cc = _extract_comment_count_from_html(html)
                 if likes is not None:
-                    return likes
+                    return {"likes": likes, "comment_count": cc, "latest_comment": None}
                 page.wait_for_timeout(3000)
                 html = page.content()
                 likes = _extract_likes_from_html(html)
+                cc = _extract_comment_count_from_html(html)
                 if likes is not None:
-                    return likes
+                    return {"likes": likes, "comment_count": cc, "latest_comment": None}
                 raise ValueError(
                     "Playwright 页面中未解析到 digg_count（可能遇验证页或链接失效）"
                 )
@@ -168,14 +178,65 @@ def fetch_likes(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = T
     return int(data["likes"])
 
 
+def fetch_metrics(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = True) -> dict[str, Any]:
+    """返回 {likes, comment_count, latest_comment}；latest_comment 可能为 None。"""
+    del auto_fallback_ssl
+    script = Path(__file__).resolve()
+    repo_root = script.parent
+    lock_path = repo_root / ".douyin_playwright_subprocess.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+
+    def _run_sub() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), "--pw-child"],
+            input=url,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
+            cwd=str(repo_root),
+            start_new_session=True,
+        )
+
+    if sys.platform == "win32":
+        r = _run_sub()
+    else:
+        import fcntl
+
+        with open(lock_path, "a+", encoding="utf-8") as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            try:
+                r = _run_sub()
+            finally:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+    out = (r.stdout or "").strip()
+    err = (r.stderr or "").strip()
+    line = out.splitlines()[-1] if out else ""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"Playwright 子进程输出无法解析: {line!r} stderr={err!r} code={r.returncode}"
+        ) from e
+    if not data.get("ok"):
+        raise ValueError(data.get("error") or "Playwright 子进程失败")
+    return {
+        "likes": int(data.get("likes") or 0),
+        "comment_count": (int(data["comment_count"]) if data.get("comment_count") is not None else None),
+        "latest_comment": data.get("latest_comment"),
+    }
+
+
 def _main_child() -> None:
     url = sys.stdin.read().strip()
     if not url:
         print(json.dumps({"ok": False, "error": "empty url"}))
         sys.exit(1)
     try:
-        n = _impl_fetch_in_child_process(url)
-        print(json.dumps({"ok": True, "likes": n}))
+        d = _impl_fetch_in_child_process(url)
+        print(json.dumps({"ok": True, **d}))
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e)}))
         sys.exit(1)

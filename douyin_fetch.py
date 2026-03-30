@@ -247,3 +247,12 @@ def fetch_likes(url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool = 
     if not matches:
         raise ValueError("未解析到点赞数（请确认链接是可访问的视频分享链接）")
     return max(int(x) for x in matches)
+
+
+def fetch_metrics(url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool = True) -> dict:
+    """兼容调度器：HTTP 路径仅返回点赞；评论相关返回 None。"""
+    return {
+        "likes": fetch_likes(url, insecure_ssl=insecure_ssl, auto_fallback_ssl=auto_fallback_ssl),
+        "comment_count": None,
+        "latest_comment": None,
+    }

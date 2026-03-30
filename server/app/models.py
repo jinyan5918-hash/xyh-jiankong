@@ -70,10 +70,18 @@ class MonitorTask(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(128))
     video_url: Mapped[str] = mapped_column(Text)
+    # 旧字段：曾用于「目标点赞」。现已改为「每增长多少赞提醒」，仍保留该列避免破坏旧库/旧客户端。
     target_likes: Mapped[int] = mapped_column(Integer)
+    # 新功能：每增长多少赞提醒（可自定义）。<=0 表示不提醒。
+    notify_step_likes: Mapped[int] = mapped_column(Integer, default=10)
+    # 上次已提醒时的点赞数（持久化，避免服务重启后重复提醒）
+    last_notified_likes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # 单任务暂停：仍为启用任务，但调度器跳过，直至恢复（与 enabled=False 长期停用区分）
     task_paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 评论监控：上次看到的评论数与签名（持久化，避免服务重启后重复提醒）
+    last_comment_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_comment_sig: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     user: Mapped["User"] = relationship(back_populates="monitor_tasks")
@@ -90,6 +98,8 @@ class MonitorRecord(Base):
     task_id: Mapped[int] = mapped_column(ForeignKey("monitor_tasks.id"), index=True)
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     likes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    comment_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latest_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     success: Mapped[bool] = mapped_column(Boolean, default=True)
     error_message: Mapped[str] = mapped_column(Text, default="")
 
@@ -97,7 +107,7 @@ class MonitorRecord(Base):
 
 
 class ReachAlert(Base):
-    """点赞达标待推送（客户端轮询后桌面通知）。"""
+    """点赞提醒（现为：每增长多少赞提醒；历史上为目标点赞）。"""
 
     __tablename__ = "reach_alerts"
 
@@ -107,5 +117,20 @@ class ReachAlert(Base):
     task_name: Mapped[str] = mapped_column(String(128))
     likes: Mapped[int] = mapped_column(Integer)
     target_likes: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class CommentAlert(Base):
+    """新评论提醒（客户端轮询后桌面通知 + 企微推送）。"""
+
+    __tablename__ = "comment_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True)
+    task_name: Mapped[str] = mapped_column(String(128))
+    comment_count: Mapped[int] = mapped_column(Integer)
+    comment_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
