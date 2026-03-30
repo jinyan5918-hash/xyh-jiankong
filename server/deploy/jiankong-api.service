@@ -22,9 +22,11 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/jiankong/server
 Environment=PYTHONUNBUFFERED=1
-# 若监控日志仍大量 403：在浏览器打开抖音后从开发者工具复制 Cookie，写入下面一行（注意保密）
-# Environment=DOUYIN_COOKIE=msToken=xxx; ttwid=xxx; ...
-# 或使用住宅代理列表（逗号分隔）：Environment=DOUYIN_PROXY_POOL=http://user:pass@host:port,...
+# 抗风控（S+A+B）完整示例见同仓库：server/deploy/jiankong-api.service.d/override.conf.example
+# 与可选长 Cookie 文件：server/deploy/douyin.env.example
+# Environment=DOUYIN_USE_PLAYWRIGHT=1
+# Environment=DOUYIN_COOKIE=...  或 EnvironmentFile=-/etc/jiankong/douyin.env
+# Environment=DOUYIN_PROXY_POOL=...   Environment=DOUYIN_PLAYWRIGHT_PROXY=...
 ExecStart=/home/ubuntu/jiankong/.venv-enterprise/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 # 进程异常退出时重启；正常 stop 不会自动拉起。若需崩溃/杀进程也必自动重建可改为 Restart=always
 Restart=on-failure

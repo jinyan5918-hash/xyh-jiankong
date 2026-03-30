@@ -1,0 +1,21 @@
+# 复制到服务器后改名为 override.conf（不要带 .example 后缀）：
+#   sudo mkdir -p /etc/systemd/system/jiankong-api.service.d
+#   sudo cp override.conf.example /etc/systemd/system/jiankong-api.service.d/override.conf
+# 编辑填好 Cookie/代理后：
+#   sudo systemctl daemon-reload && sudo systemctl restart jiankong-api
+#
+# 若 DOUYIN_COOKIE 很长或含特殊字符，建议不要用下面 Environment= 单行，
+# 改用同目录说明：douyin.env.example + systemd EnvironmentFile=（见该文件注释）。
+
+[Service]
+# --- S：Playwright + Chromium（必开，抗风控基线）---
+Environment=DOUYIN_USE_PLAYWRIGHT=1
+
+# --- B：从本机浏览器开发者工具复制的整段 Cookie（强烈建议配置）---
+# Environment=DOUYIN_COOKIE=请粘贴Cookie内容
+
+# --- A：代理（任选；住宅/移动出口优于机房 IP）---
+# HTTP 回退路径随机选用，逗号分隔多个：
+# Environment=DOUYIN_PROXY_POOL=http://user:pass@host1:port,http://user:pass@host2:port
+# 仅 Playwright 启动 Chromium 时走这一条（与上面可同时存在）：
+# Environment=DOUYIN_PLAYWRIGHT_PROXY=http://user:pass@host:port
