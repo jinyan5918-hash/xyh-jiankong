@@ -33,6 +33,20 @@ _DIGG_PATTERNS = (
 )
 COMMENT_PATTERN = re.compile(r'"comment_count"\s*:\s*(\d+)')
 
+# 短链 id 至少 6 位，避免把误贴在 path 里的「https」当成 id（仅 5 位）
+_SHORT_CODE_IN_URL = re.compile(
+    r"https://v\.douyin\.com/([A-Za-z0-9]{6,})/?", re.IGNORECASE
+)
+
+
+def _pick_short_share_url(raw: str) -> str:
+    """若误粘贴成 …/v.douyin.com/https://v.douyin.com/xxx/，取最后一个合法短链。"""
+    hits = _SHORT_CODE_IN_URL.findall(raw)
+    if not hits:
+        return raw
+    return f"https://v.douyin.com/{hits[-1]}/"
+
+
 _UA_MOBILE = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
     "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
@@ -86,6 +100,7 @@ def _extract_comment_count_from_html(html: str) -> int | None:
 
 def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[str, Any]:
     """仅在子进程中调用：一次 with 块内完成 launch → 抓取 → 关闭。"""
+    url = _pick_short_share_url(url.strip())
     _reset_signals_for_child()
     from playwright.sync_api import sync_playwright
 
