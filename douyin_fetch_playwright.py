@@ -71,7 +71,7 @@ def _extract_comment_count_from_html(html: str) -> int | None:
     return max(int(x) for x in matches)
 
 
-def _impl_fetch_in_child_process(url: str) -> dict[str, Any]:
+def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[str, Any]:
     """仅在子进程中调用：一次 with 块内完成 launch → 抓取 → 关闭。"""
     _reset_signals_for_child()
     from playwright.sync_api import sync_playwright
@@ -121,6 +121,13 @@ def _impl_fetch_in_child_process(url: str) -> dict[str, Any]:
                         "latest_comment": None,
                         "html": html[:500000],
                     }
+                if not require_likes:
+                    return {
+                        "likes": 0,
+                        "comment_count": cc,
+                        "latest_comment": None,
+                        "html": html[:500000],
+                    }
                 page.wait_for_timeout(3000)
                 html = page.content()
                 likes = _extract_likes_from_html(html)
@@ -128,6 +135,13 @@ def _impl_fetch_in_child_process(url: str) -> dict[str, Any]:
                 if likes is not None:
                     return {
                         "likes": likes,
+                        "comment_count": cc,
+                        "latest_comment": None,
+                        "html": html[:500000],
+                    }
+                if not require_likes:
+                    return {
+                        "likes": 0,
                         "comment_count": cc,
                         "latest_comment": None,
                         "html": html[:500000],
@@ -152,7 +166,7 @@ def fetch_likes(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = T
 
     def _run_sub() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(script), "--pw-child"],
+            [sys.executable, str(script), "--pw-author-child"],
             input=url,
             capture_output=True,
             text=True,
@@ -299,7 +313,21 @@ def _main_child() -> None:
         print(json.dumps({"ok": False, "error": "empty url"}))
         sys.exit(1)
     try:
-        d = _impl_fetch_in_child_process(url)
+        d = _impl_fetch_in_child_process(url, require_likes=True)
+        d["html"] = d.get("html") or ""
+        print(json.dumps({"ok": True, **d}))
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        sys.exit(1)
+
+
+def _main_author_child() -> None:
+    url = sys.stdin.read().strip()
+    if not url:
+        print(json.dumps({"ok": False, "error": "empty url"}))
+        sys.exit(1)
+    try:
+        d = _impl_fetch_in_child_process(url, require_likes=False)
         d["html"] = d.get("html") or ""
         print(json.dumps({"ok": True, **d}))
     except Exception as e:
@@ -310,6 +338,8 @@ def _main_child() -> None:
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--pw-child":
         _main_child()
+    elif len(sys.argv) == 2 and sys.argv[1] == "--pw-author-child":
+        _main_author_child()
     else:
         sys.stderr.write("Use: python douyin_fetch_playwright.py --pw-child <stdin url>\n")
         sys.exit(2)

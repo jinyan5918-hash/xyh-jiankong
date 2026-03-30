@@ -88,6 +88,35 @@ def _load_fetch_metrics():
     return None
 
 
+def _load_http_fetch_metrics():
+    """兜底 HTTP 抓取：当 Playwright 单次失败时回退，减少整站失败噪声。"""
+    root = Path(__file__).resolve().parents[2]
+    for filename in ("douyin_fetch.py", "douyin_monitor_gui.py"):
+        root_file = root / filename
+        if not root_file.exists():
+            continue
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(root_file.stem, str(root_file))
+        if not spec or not spec.loader:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            continue
+        fn = getattr(module, "fetch_metrics", None)
+        if fn is not None:
+            return fn
+        fn2 = getattr(module, "fetch_likes", None)
+        if fn2 is not None:
+            def _metrics(url: str, insecure_ssl: bool = True):
+                return {"likes": int(fn2(url, insecure_ssl=insecure_ssl)), "comment_count": None, "latest_comment": None}
+
+            return _metrics
+    return None
+
+
 @dataclass
 class TaskRuntimeState:
     next_run_at: float = 0.0
@@ -109,6 +138,7 @@ class MonitorScheduler:
         self._thread: threading.Thread | None = None
         self._states: dict[int, TaskRuntimeState] = {}
         self._fetch_metrics = _load_fetch_metrics()
+        self._fetch_metrics_http_fallback = _load_http_fetch_metrics()
         self.interval_min_sec = int(os.getenv("SCHED_INTERVAL_MIN_SEC", "180"))
         self.interval_max_sec = int(os.getenv("SCHED_INTERVAL_MAX_SEC", "480"))
         self.cooldown_min_sec = int(os.getenv("SCHED_COOLDOWN_MIN_SEC", "900"))
@@ -198,7 +228,14 @@ class MonitorScheduler:
                 return
             if not self._fetch_metrics:
                 raise RuntimeError("fetch_metrics not available")
-            metrics = self._fetch_metrics(task.video_url, insecure_ssl=True) or {}
+            try:
+                metrics = self._fetch_metrics(task.video_url, insecure_ssl=True) or {}
+            except Exception as e_pw:
+                fb = self._fetch_metrics_http_fallback
+                if fb is None:
+                    raise
+                print(f"[scheduler] task={task.id} Playwright失败，回退HTTP: {e_pw}")
+                metrics = fb(task.video_url, insecure_ssl=True) or {}
             likes = int(metrics.get("likes") or 0)
             comment_count = metrics.get("comment_count")
             latest_comment = metrics.get("latest_comment")
