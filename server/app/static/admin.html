@@ -65,9 +65,47 @@
     </div>
   </div>
 
+  <div class="card" id="newStaffCard">
+    <h2>新增员工账号</h2>
+    <p class="muted">与下方「员工账号管理」列表分开，先维护小组，再在此创建账号。新建员工须填写企业微信 Webhook；创建后员工登录 Windows 客户端会自动带出（仍可在客户端修改）。</p>
+
+    <h3 style="margin:16px 0 8px; font-size:16px;">小组管理</h3>
+    <p class="muted" style="font-size:13px;">小组名称全站唯一。主管理员添加的为「全局」小组，所有超级管理员创建员工时均可选；超级管理员添加的为「本部门」小组，仅本人与主管理员可见、可选。</p>
+    <div class="row" style="margin-bottom:8px;">
+      <input id="newGroupName" placeholder="新小组名称" style="width:200px;" />
+      <button type="button" onclick="addStaffGroup()">添加小组</button>
+      <button type="button" onclick="loadStaffGroupsForManage()">刷新小组列表</button>
+    </div>
+    <table style="max-width:640px;">
+      <thead>
+        <tr><th>小组名称</th><th>范围</th><th>操作</th></tr>
+      </thead>
+      <tbody id="staffGroupsManageTable"></tbody>
+    </table>
+
+    <h3 style="margin:20px 0 8px; font-size:16px;">填写新员工</h3>
+    <div class="row">
+      <input id="newUsername" placeholder="新账号名" />
+      <input id="newPassword" type="password" placeholder="初始密码（>=8位）" />
+      <input id="newMaxDevices" type="number" value="2" min="1" max="10" />
+    </div>
+    <div class="row">
+      <label class="muted">归属小组</label>
+      <select id="newStaffGroup" style="padding:8px; min-width:220px;">
+        <option value="">（不归属小组）</option>
+      </select>
+    </div>
+    <div class="row" style="margin-top:8px; width:100%;">
+      <input id="newWecomWebhook" placeholder="企业微信 Webhook（必填，以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头）" style="flex:1; min-width:320px; max-width:900px;" />
+    </div>
+    <div class="row">
+      <button onclick="createUser()">创建账号</button>
+    </div>
+  </div>
+
   <div class="card">
     <h2>员工账号管理</h2>
-    <p class="muted">新建员工必须填写其「企业微信群机器人 Webhook」，员工登录 Windows 客户端后会自动带出，无需员工自己找地址（仍可在客户端修改）。超级管理员可为员工填写「小组」便于筛选。</p>
+    <p class="muted">查询、筛选与维护已有账号（启用/禁用、Webhook、设备上限、改小组等）。「所属小组」「创建者」列展示员工归属与创建该员工的超级管理员登录名（主管理员直接创建的员工显示为「主管理员」）。</p>
     <div class="row" id="staffOwnerFilterRow" style="display:none;">
       <label class="muted">按创建者筛选（员工）</label>
       <select id="filterStaffOwner" style="padding:8px; min-width:280px;" onchange="userPage=1; loadUsers();">
@@ -77,28 +115,16 @@
     </div>
     <div class="row">
       <input id="userSearch" placeholder="搜索用户名或用户ID" style="width:200px;" />
-      <label class="muted">小组</label>
-      <input id="filterStaffGroup" placeholder="筛选小组（可空）" list="staffGroupList" style="width:160px;" />
+      <label class="muted">筛选小组</label>
+      <input id="filterStaffGroup" placeholder="可空" list="staffGroupList" style="width:160px;" />
       <datalist id="staffGroupList"></datalist>
       <button onclick="resetUserFilters()">重置筛选</button>
-    </div>
-    <div class="row">
-      <input id="newUsername" placeholder="新账号名" />
-      <input id="newPassword" placeholder="初始密码（>=8位）" />
-      <input id="newMaxDevices" type="number" value="2" min="1" max="10" />
-      <input id="newStaffGroup" placeholder="小组（选填）" style="width:140px;" list="staffGroupList" />
-    </div>
-    <div class="row" style="margin-top:8px; width:100%;">
-      <input id="newWecomWebhook" placeholder="企业微信 Webhook（必填，以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头）" style="flex:1; min-width:320px; max-width:900px;" />
-    </div>
-    <div class="row">
-      <button onclick="createUser()">创建账号</button>
       <button onclick="userPage=1; loadUsers()">刷新列表</button>
     </div>
     <table>
       <thead>
         <tr>
-          <th>ID</th><th>类型</th><th>用户名</th><th>小组</th><th>创建者</th><th>Webhook(摘要)</th><th>设备上限</th><th>启用状态</th><th>操作</th>
+          <th>ID</th><th>类型</th><th>用户名</th><th>所属小组</th><th>创建者（超级管理员账号）</th><th>Webhook(摘要)</th><th>设备上限</th><th>启用状态</th><th>操作</th>
         </tr>
       </thead>
       <tbody id="usersTable"></tbody>
@@ -107,6 +133,30 @@
       <button type="button" onclick="userPrevPage()">上一页</button>
       <span id="userPageInfo" class="muted"></span>
       <button type="button" onclick="userNextPage()">下一页</button>
+    </div>
+  </div>
+
+  <div class="card" id="monitorTasksCard" style="display:none;">
+    <h2>员工监控任务一览</h2>
+    <p class="muted">数据来自服务端：员工在 Windows 客户端配置的任务会同步到此（实时性：约每 15 秒自动刷新 + 可手动刷新）。「当前点赞」为调度器最近一次成功值；全局「暂停/停止监控」与单任务状态均在列中体现。</p>
+    <div class="row">
+      <input id="mtUserId" type="number" placeholder="筛选用户ID（可空）" style="width:140px;" />
+      <input id="mtStaffGroup" placeholder="筛选小组（可空）" list="staffGroupList" style="width:140px;" />
+      <input id="mtSearch" placeholder="搜索员工用户名" style="width:160px;" />
+      <button type="button" onclick="monitorTaskPage=1; loadMonitorTasks()">刷新任务表</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>任务ID</th><th>员工账号</th><th>所属小组</th><th>创建者</th><th>任务名称</th><th>当前点赞</th><th>目标</th><th>任务状态</th><th>全局监控</th><th>链接摘要</th>
+        </tr>
+      </thead>
+      <tbody id="monitorTasksTable"></tbody>
+    </table>
+    <div class="row pager">
+      <button type="button" onclick="monitorTaskPrevPage()">上一页</button>
+      <span id="monitorTaskPageInfo" class="muted"></span>
+      <button type="button" onclick="monitorTaskNextPage()">下一页</button>
     </div>
   </div>
 
@@ -219,6 +269,10 @@
     let statsHourPage = 1;
     const statsHourPageSize = 12;
     let statsHourTotal = 0;
+    let monitorTaskPage = 1;
+    const monitorTaskPageSize = 15;
+    let monitorTaskTotal = 0;
+    let _monitorTasksTimer = null;
 
     function headers() {
       return token ? { "Authorization": "Bearer " + token, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
@@ -241,10 +295,15 @@
       document.getElementById("schedulerCard").style.display = "block";
       const isMain = adminRole === "main";
       const isTenant = adminRole === "tenant";
+      const isMgr = isMain || isTenant;
       document.getElementById("schedulerHintMain").style.display = isMain ? "block" : "none";
       document.getElementById("schedulerButtonsRow").style.display = isMain ? "flex" : "none";
       document.getElementById("tenantAdminCard").style.display = isMain ? "block" : "none";
       document.getElementById("staffOwnerFilterRow").style.display = isMain ? "flex" : "none";
+      const nsc = document.getElementById("newStaffCard");
+      const mtc = document.getElementById("monitorTasksCard");
+      if (nsc) nsc.style.display = isMgr ? "block" : "none";
+      if (mtc) mtc.style.display = isMgr ? "block" : "none";
       const label = isMain ? "主管理员" : (isTenant ? "超级管理员" : "后台");
       document.getElementById("roleBannerText").textContent = "当前身份：" + label + " — 超级管理员仅能管理本部门员工；员工请使用 Windows 客户端登录。";
     }
@@ -289,11 +348,162 @@
       statsHourPage = 1;
       applyRoleUi();
       await loadMeta();
+      if (adminRole === "main" || adminRole === "tenant") {
+        await loadStaffGroupsForManage();
+      }
       await loadUsers();
       await loadDevices();
       await loadRecords();
       await loadStats();
       await schedulerStatus();
+      if (adminRole === "main" || adminRole === "tenant") {
+        monitorTaskPage = 1;
+        await loadMonitorTasks();
+        if (_monitorTasksTimer) clearInterval(_monitorTasksTimer);
+        _monitorTasksTimer = setInterval(loadMonitorTasks, 15000);
+      }
+    }
+
+    async function loadStaffGroupsForManage() {
+      const r = await fetch(API + "/admin/staff-groups", { headers: headers() });
+      const tb = document.getElementById("staffGroupsManageTable");
+      const sel = document.getElementById("newStaffGroup");
+      if (!r.ok) {
+        if (tb) tb.innerHTML = "<tr><td colspan='3' class='err'>小组列表加载失败</td></tr>";
+        return;
+      }
+      const list = await r.json();
+      const keep = sel ? sel.value : "";
+      if (tb) tb.innerHTML = "";
+      if (sel) {
+        sel.innerHTML = '<option value="">（不归属小组）</option>';
+      }
+      for (const g of list) {
+        if (sel) {
+          const op = document.createElement("option");
+          op.value = g.name;
+          op.textContent = g.name + (g.is_global ? "（全局）" : "（本部门）");
+          sel.appendChild(op);
+        }
+        if (tb) {
+          const tr = document.createElement("tr");
+          tr.innerHTML =
+            "<td>" + escapeHtml(g.name) + "</td><td>" + (g.is_global ? "全局" : "本部门") + "</td>" +
+            "<td><button type='button' onclick='deleteStaffGroup(" + g.id + ")'>删除</button></td>";
+          tb.appendChild(tr);
+        }
+      }
+      if (sel && keep) sel.value = keep;
+    }
+
+    async function addStaffGroup() {
+      const el = document.getElementById("newGroupName");
+      const name = (el && el.value || "").trim();
+      if (name.length < 1) {
+        alert("请输入小组名称");
+        return;
+      }
+      const r = await fetch(API + "/admin/staff-groups", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ name }),
+      });
+      if (!r.ok) {
+        alert("添加失败: " + await r.text());
+        return;
+      }
+      if (el) el.value = "";
+      await loadStaffGroupsForManage();
+      await loadMeta();
+      alert("小组已添加");
+    }
+
+    async function deleteStaffGroup(id) {
+      if (!confirm("确定删除该小组？若有员工仍归属此小组名将无法删除。")) return;
+      const r = await fetch(API + "/admin/staff-groups/" + id, {
+        method: "DELETE",
+        headers: headers(),
+      });
+      if (!r.ok) {
+        alert("删除失败: " + await r.text());
+        return;
+      }
+      await loadStaffGroupsForManage();
+      await loadMeta();
+      await loadUsers();
+    }
+
+    function monitorTaskPrevPage() {
+      if (monitorTaskPage > 1) {
+        monitorTaskPage--;
+        loadMonitorTasks();
+      }
+    }
+    function monitorTaskNextPage() {
+      const maxP = Math.max(1, Math.ceil(monitorTaskTotal / monitorTaskPageSize));
+      if (monitorTaskPage < maxP) {
+        monitorTaskPage++;
+        loadMonitorTasks();
+      }
+    }
+
+    function fmtTaskState(t) {
+      if (!t.enabled) return "已停用";
+      if (t.task_paused) return "已暂停";
+      return "监控中";
+    }
+    function fmtGlobalMon(t) {
+      if (!t.monitoring_active) return "已停止";
+      if (t.monitoring_paused) return "已暂停";
+      return "运行中";
+    }
+
+    async function loadMonitorTasks() {
+      if (adminRole !== "main" && adminRole !== "tenant") return;
+      const params = new URLSearchParams();
+      params.set("page", String(monitorTaskPage));
+      params.set("page_size", String(monitorTaskPageSize));
+      const uid = document.getElementById("mtUserId").value.trim();
+      if (uid) params.set("user_id", uid);
+      const sg = document.getElementById("mtStaffGroup").value.trim();
+      if (sg) params.set("staff_group", sg);
+      const ms = document.getElementById("mtSearch").value.trim();
+      if (ms) params.set("search", ms);
+      const r = await fetch(API + "/admin/monitor-tasks?" + params.toString(), { headers: headers() });
+      const info = document.getElementById("monitorTaskPageInfo");
+      const tbody = document.getElementById("monitorTasksTable");
+      if (!r.ok) {
+        if (info) info.textContent = "加载失败 HTTP " + r.status;
+        return;
+      }
+      const data = await r.json();
+      const items = data.items || [];
+      monitorTaskTotal = data.total ?? 0;
+      const maxP = Math.max(1, Math.ceil(monitorTaskTotal / monitorTaskPageSize));
+      if (info) {
+        info.textContent = "第 " + monitorTaskPage + " / " + maxP + " 页，共 " + monitorTaskTotal + " 条任务";
+      }
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      for (const t of items) {
+        const url = t.video_url || "";
+        const urlShort = url.length > 52 ? (url.substring(0, 52) + "…") : url;
+        const cur = t.current_likes != null ? String(t.current_likes) : "—";
+        const creator = t.creator_tenant_username ? escapeHtml(t.creator_tenant_username) : "主管理员";
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + t.task_id + "</td>" +
+          "<td>" + escapeHtml(t.username) + "</td>" +
+          "<td>" + escapeHtml(t.staff_group || "—") + "</td>" +
+          "<td>" + creator + "</td>" +
+          "<td>" + escapeHtml(t.task_name) + "</td>" +
+          "<td>" + cur + "</td>" +
+          "<td>" + t.target_likes + "</td>" +
+          "<td>" + fmtTaskState(t) + "</td>" +
+          "<td>" + fmtGlobalMon(t) + "</td>" +
+          "<td title=\"" + url.replace(/"/g, "&quot;") + "\" style=\"font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;\">" + escapeHtml(urlShort) + "</td>";
+        tbody.appendChild(tr);
+      }
     }
 
     async function loadMeta() {
@@ -495,13 +705,18 @@
         } else {
           const wh = u.wecom_webhook_url || "";
           const whShort = wh.length > 40 ? (wh.substring(0, 40) + "…") : (wh || "—");
-          const creator = escapeHtml(u.created_by_username || (u.created_by_admin_id ? ("#" + u.created_by_admin_id) : "—"));
+          let creatorCell;
+          if (u.created_by_admin_id) {
+            creatorCell = escapeHtml(u.created_by_username || ("#" + u.created_by_admin_id));
+          } else {
+            creatorCell = "主管理员";
+          }
           tr.innerHTML = `
             <td>${u.id}</td>
             <td>${typeLabel}</td>
             <td>${escapeHtml(u.username)}</td>
             <td>${escapeHtml(u.staff_group || "—")}</td>
-            <td>${creator}</td>
+            <td>${creatorCell}</td>
             <td title="${wh.replace(/"/g, "&quot;")}" style="font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;">${whShort}</td>
             <td><input id="max_${u.id}" type="number" min="1" max="10" value="${u.max_devices}" style="width:70px"/></td>
             <td>${u.is_active ? "启用" : "禁用"}</td>
@@ -533,6 +748,7 @@
         return;
       }
       await loadMeta();
+      await loadStaffGroupsForManage();
       await loadUsers();
       alert("已更新小组");
     }
@@ -554,7 +770,8 @@
         alert("请填写完整的企业微信 Webhook 地址（以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头）");
         return;
       }
-      const sg = document.getElementById("newStaffGroup").value.trim();
+      const sgSel = document.getElementById("newStaffGroup");
+      const sg = (sgSel && sgSel.value || "").trim();
       const payload = {
         username,
         password,
@@ -581,11 +798,13 @@
         return;
       }
       await loadMeta();
+      await loadStaffGroupsForManage();
       await loadUsers();
       document.getElementById("newUsername").value = "";
       document.getElementById("newPassword").value = "";
       document.getElementById("newWecomWebhook").value = "";
-      document.getElementById("newStaffGroup").value = "";
+      const ng = document.getElementById("newStaffGroup");
+      if (ng) ng.value = "";
       alert("创建成功");
     }
 

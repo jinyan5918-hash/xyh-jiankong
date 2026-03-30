@@ -70,6 +70,39 @@ class AdminMetaOut(BaseModel):
     staff_groups: list[str] = []
 
 
+class StaffGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class StaffGroupOut(BaseModel):
+    id: int
+    name: str
+    is_global: bool = False
+
+
+class AdminStaffTaskRow(BaseModel):
+    task_id: int
+    user_id: int
+    username: str
+    staff_group: str | None = None
+    creator_tenant_username: str | None = None
+    task_name: str
+    video_url: str
+    target_likes: int
+    enabled: bool
+    task_paused: bool = False
+    current_likes: int | None = None
+    monitoring_active: bool = True
+    monitoring_paused: bool = False
+
+
+class PaginatedAdminStaffTasksOut(BaseModel):
+    items: list[AdminStaffTaskRow]
+    total: int
+    page: int
+    page_size: int
+
+
 class AdminDeviceOut(BaseModel):
     id: int
     user_id: int

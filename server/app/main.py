@@ -8,12 +8,16 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine
 from .deps import get_current_user, get_db
-from .models import Device, MonitorRecord, MonitorTask, ReachAlert, User
+from .models import Device, MonitorRecord, MonitorTask, ReachAlert, StaffGroup, User
 from .urlnorm import normalize_douyin_url_safe
 from .schemas import (
     AdminDeviceOut,
     AdminMetaOut,
     AdminMeOut,
+    AdminStaffTaskRow,
+    PaginatedAdminStaffTasksOut,
+    StaffGroupCreate,
+    StaffGroupOut,
     LoginRequest,
     MyRecordRow,
     MonitorSettingsPatch,
@@ -97,6 +101,23 @@ def _run_lightweight_migrations() -> None:
             conn.execute(
                 text("UPDATE monitor_tasks SET task_paused = 0 WHERE task_paused IS NULL")
             )
+        if "staff_groups" in insp.get_table_names():
+            g_rows = conn.execute(
+                text(
+                    "SELECT DISTINCT staff_group FROM users WHERE staff_group IS NOT NULL "
+                    "AND TRIM(staff_group) != ''"
+                )
+            ).fetchall()
+            for (g,) in g_rows:
+                if not g:
+                    continue
+                conn.execute(
+                    text(
+                        "INSERT INTO staff_groups (name, creator_tenant_id) "
+                        "SELECT :g, NULL WHERE NOT EXISTS (SELECT 1 FROM staff_groups WHERE name = :g)"
+                    ),
+                    {"g": g},
+                )
 
 
 def _ensure_admin() -> None:
@@ -218,6 +239,45 @@ def _users_to_out_batch(db: Session, users: list[User]) -> list[UserOut]:
             UserOut.model_validate(u).model_copy(update={"created_by_username": cname})
         )
     return outs
+
+
+def _staff_group_pick_names(db: Session, admin: User) -> set[str]:
+    q = db.query(StaffGroup.name)
+    if _is_tenant_admin(admin):
+        q = q.filter(
+            or_(StaffGroup.creator_tenant_id.is_(None), StaffGroup.creator_tenant_id == admin.id)
+        )
+    return {r[0] for r in q.all()}
+
+
+def _normalize_staff_group_for_admin(db: Session, admin: User, raw: str | None) -> str | None:
+    sg = (raw or "").strip() or None
+    if not sg:
+        return None
+    if sg not in _staff_group_pick_names(db, admin):
+        raise HTTPException(
+            status_code=400,
+            detail="小组须从「小组管理」中已添加的名称里选择；若无合适项请先在小组管理中添加",
+        )
+    return sg
+
+
+def _meta_staff_group_strings(db: Session, admin: User) -> list[str]:
+    q = db.query(StaffGroup.name)
+    if _is_tenant_admin(admin):
+        q = q.filter(
+            or_(StaffGroup.creator_tenant_id.is_(None), StaffGroup.creator_tenant_id == admin.id)
+        )
+    from_table = {r[0] for r in q.all()}
+    legacy_q = db.query(User.staff_group).filter(
+        _sql_user_is_staff_employee(),
+        User.staff_group.isnot(None),
+        User.staff_group != "",
+    )
+    if _is_tenant_admin(admin):
+        legacy_q = legacy_q.filter(User.created_by_admin_id == admin.id)
+    legacy = {r[0] for r in legacy_q.distinct().all()}
+    return sorted(from_table | legacy)
 
 
 @app.get("/health")
@@ -703,16 +763,7 @@ def admin_meta(
     db: Session = Depends(get_db),
 ):
     _require_admin_console(current_user)
-    groups_q = db.query(User.staff_group).filter(
-        _sql_user_is_staff_employee(),
-        User.staff_group.isnot(None),
-        User.staff_group != "",
-    )
-    if _is_tenant_admin(current_user):
-        groups_q = groups_q.filter(User.created_by_admin_id == current_user.id)
-    raw_groups = [
-        r[0] for r in groups_q.distinct().order_by(User.staff_group.asc()).all()
-    ]
+    raw_groups = _meta_staff_group_strings(db, current_user)
     tenants: list[TenantAdminBrief] = []
     if _is_main_admin(current_user):
         trows = (
@@ -723,6 +774,162 @@ def admin_meta(
         )
         tenants = [TenantAdminBrief(id=r[0], username=r[1]) for r in trows]
     return AdminMetaOut(tenant_admins=tenants, staff_groups=raw_groups)
+
+
+@app.get("/admin/staff-groups", response_model=list[StaffGroupOut])
+def admin_list_staff_groups(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_admin_console(current_user)
+    if _is_main_admin(current_user):
+        rows = db.query(StaffGroup).order_by(StaffGroup.name.asc()).all()
+    else:
+        rows = (
+            db.query(StaffGroup)
+            .filter(
+                or_(
+                    StaffGroup.creator_tenant_id.is_(None),
+                    StaffGroup.creator_tenant_id == current_user.id,
+                )
+            )
+            .order_by(StaffGroup.name.asc())
+            .all()
+        )
+    return [
+        StaffGroupOut(id=r.id, name=r.name, is_global=r.creator_tenant_id is None)
+        for r in rows
+    ]
+
+
+@app.post("/admin/staff-groups", response_model=StaffGroupOut)
+def admin_create_staff_group(
+    payload: StaffGroupCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_admin_console(current_user)
+    n = payload.name.strip()
+    if not n:
+        raise HTTPException(status_code=400, detail="小组名称不能为空")
+    if db.query(StaffGroup).filter(StaffGroup.name == n).first():
+        raise HTTPException(status_code=400, detail="该小组名称已存在（全站唯一）")
+    owner = None if _is_main_admin(current_user) else current_user.id
+    row = StaffGroup(name=n, creator_tenant_id=owner)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return StaffGroupOut(id=row.id, name=row.name, is_global=row.creator_tenant_id is None)
+
+
+@app.delete("/admin/staff-groups/{group_id}")
+def admin_delete_staff_group(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_admin_console(current_user)
+    row = db.query(StaffGroup).filter(StaffGroup.id == group_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="小组不存在")
+    if row.creator_tenant_id is None:
+        if not _is_main_admin(current_user):
+            raise HTTPException(status_code=403, detail="仅主管理员可删除全局小组")
+    elif not _is_main_admin(current_user) and row.creator_tenant_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权删除该小组")
+    in_use = (
+        db.query(User.id)
+        .filter(_sql_user_is_staff_employee(), User.staff_group == row.name)
+        .first()
+    )
+    if in_use:
+        raise HTTPException(status_code=400, detail="仍有员工归属该小组，无法删除")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/admin/monitor-tasks", response_model=PaginatedAdminStaffTasksOut)
+def admin_monitor_tasks(
+    page: int = 1,
+    page_size: int = 20,
+    user_id: int | None = None,
+    staff_group: str | None = None,
+    search: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """超级管理员 / 主管理员查看员工在客户端配置的监控任务（数据来自服务端库 + 调度器当前点赞）。"""
+    _require_admin_console(current_user)
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    q = (
+        db.query(MonitorTask, User)
+        .join(User, MonitorTask.user_id == User.id)
+        .filter(_sql_user_is_staff_employee())
+    )
+    if _is_tenant_admin(current_user):
+        q = q.filter(User.created_by_admin_id == current_user.id)
+    if user_id is not None:
+        q = q.filter(MonitorTask.user_id == user_id)
+    sg = (staff_group or "").strip()
+    if sg:
+        q = q.filter(User.staff_group == sg)
+    if search and (t := search.strip()):
+        q = q.filter(User.username.contains(t))
+    total = q.count()
+    rows = (
+        q.order_by(MonitorTask.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    task_ids = [t.id for t, _u in rows]
+    st = scheduler.status().get("states") or {}
+    latest_map = _latest_success_likes_by_task(db, task_ids)
+    creator_ids = {u.created_by_admin_id for _t, u in rows if u.created_by_admin_id}
+    creator_name_map: dict[int, str] = {}
+    if creator_ids:
+        for cid, cname in (
+            db.query(User.id, User.username).filter(User.id.in_(creator_ids)).all()
+        ):
+            creator_name_map[cid] = cname
+    items: list[AdminStaffTaskRow] = []
+    for task, user in rows:
+        sid = st.get(task.id) or {}
+        raw = sid.get("last_likes")
+        cur: int | None
+        if raw is not None:
+            cur = int(raw)
+        elif task.id in latest_map:
+            cur = latest_map[task.id]
+        else:
+            cur = None
+        ct_uname: str | None
+        if user.created_by_admin_id:
+            ct_uname = creator_name_map.get(user.created_by_admin_id)
+        else:
+            ct_uname = None
+        items.append(
+            AdminStaffTaskRow(
+                task_id=task.id,
+                user_id=user.id,
+                username=user.username,
+                staff_group=user.staff_group,
+                creator_tenant_username=ct_uname,
+                task_name=task.name,
+                video_url=task.video_url,
+                target_likes=task.target_likes,
+                enabled=task.enabled,
+                task_paused=bool(getattr(task, "task_paused", False)),
+                current_likes=cur,
+                monitoring_active=bool(user.monitoring_active),
+                monitoring_paused=bool(user.monitoring_paused),
+            )
+        )
+    return PaginatedAdminStaffTasksOut(
+        items=items, total=total, page=page, page_size=page_size
+    )
 
 
 @app.get("/admin/users", response_model=PaginatedUsersOut)
@@ -809,7 +1016,7 @@ def admin_create_user(
             status_code=400,
             detail="企业微信 Webhook 须以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头",
         )
-    sg = (payload.staff_group or "").strip() or None
+    sg = _normalize_staff_group_for_admin(db, current_user, payload.staff_group)
     user = User(
         username=payload.username,
         password_hash=hash_password(payload.password),
@@ -861,8 +1068,8 @@ def admin_update_user(
             updates.pop("staff_group")
         else:
             raw = updates.pop("staff_group")
-            user.staff_group = (
-                raw.strip() if isinstance(raw, str) and raw.strip() else None
+            user.staff_group = _normalize_staff_group_for_admin(
+                db, current_user, raw if isinstance(raw, str) else None
             )
     for key, value in updates.items():
         setattr(user, key, value)
@@ -888,6 +1095,9 @@ def admin_delete_user(
     if (user.admin_role or "none") == "tenant":
         if not _is_main_admin(current_user):
             raise HTTPException(status_code=403, detail="仅主管理员可删除超级管理员")
+        db.query(StaffGroup).filter(StaffGroup.creator_tenant_id == user.id).delete(
+            synchronize_session=False
+        )
         for (sid,) in db.query(User.id).filter(User.created_by_admin_id == user.id).all():
             _purge_user_data(db, sid)
         _purge_user_data(db, user.id)

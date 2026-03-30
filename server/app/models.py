@@ -36,6 +36,18 @@ class User(Base):
     monitor_tasks: Mapped[list["MonitorTask"]] = relationship(back_populates="user")
 
 
+class StaffGroup(Base):
+    """小组名称表：name 全库唯一。creator_tenant_id 为空表示主管理员维护的全局小组；否则为创建该条的超级管理员。"""
+
+    __tablename__ = "staff_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    creator_tenant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+
+
 class Device(Base):
     __tablename__ = "devices"
     __table_args__ = (UniqueConstraint("user_id", "device_id", name="uq_user_device"),)
