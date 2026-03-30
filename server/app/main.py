@@ -453,12 +453,23 @@ def video_author_nickname(
     root = Path(__file__).resolve().parents[2]
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    from douyin_fetch import fetch_author_nickname as _fetch_author_nickname
-
+    nick = ""
+    # 优先 Playwright：在云端被风控时昵称解析成功率更高；失败再回退 HTTP。
     try:
-        nick = _fetch_author_nickname(nu)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        from douyin_fetch_playwright import (
+            fetch_author_nickname as _fetch_author_nickname_pw,
+        )
+
+        nick = (_fetch_author_nickname_pw(nu) or "").strip()
+    except Exception:
+        nick = ""
+    if not nick:
+        try:
+            from douyin_fetch import fetch_author_nickname as _fetch_author_nickname
+
+            nick = (_fetch_author_nickname(nu) or "").strip()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
     return {"nickname": (nick or "").strip()}
 
 

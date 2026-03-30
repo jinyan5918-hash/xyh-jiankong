@@ -115,13 +115,23 @@ def _impl_fetch_in_child_process(url: str) -> dict[str, Any]:
                 likes = _extract_likes_from_html(html)
                 cc = _extract_comment_count_from_html(html)
                 if likes is not None:
-                    return {"likes": likes, "comment_count": cc, "latest_comment": None}
+                    return {
+                        "likes": likes,
+                        "comment_count": cc,
+                        "latest_comment": None,
+                        "html": html[:500000],
+                    }
                 page.wait_for_timeout(3000)
                 html = page.content()
                 likes = _extract_likes_from_html(html)
                 cc = _extract_comment_count_from_html(html)
                 if likes is not None:
-                    return {"likes": likes, "comment_count": cc, "latest_comment": None}
+                    return {
+                        "likes": likes,
+                        "comment_count": cc,
+                        "latest_comment": None,
+                        "html": html[:500000],
+                    }
                 raise ValueError(
                     "Playwright 页面中未解析到 digg_count（可能遇验证页或链接失效）"
                 )
@@ -229,6 +239,60 @@ def fetch_metrics(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool =
     }
 
 
+def fetch_author_nickname(url: str, insecure_ssl: bool = True, auto_fallback_ssl: bool = True) -> str | None:
+    """Playwright 路径下解析作者昵称，优先 author.nickname。"""
+    del insecure_ssl, auto_fallback_ssl
+    script = Path(__file__).resolve()
+    repo_root = script.parent
+    lock_path = repo_root / ".douyin_playwright_subprocess.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+
+    def _run_sub() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), "--pw-child"],
+            input=url,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
+            cwd=str(repo_root),
+            start_new_session=True,
+        )
+
+    if sys.platform == "win32":
+        r = _run_sub()
+    else:
+        import fcntl
+
+        with open(lock_path, "a+", encoding="utf-8") as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            try:
+                r = _run_sub()
+            finally:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+    out = (r.stdout or "").strip()
+    line = out.splitlines()[-1] if out else ""
+    data = json.loads(line) if line else {}
+    if not data.get("ok"):
+        return None
+    html = str(data.get("html") or "")
+    if not html:
+        return None
+    m = re.search(
+        r'"author"\s*:\s*\{[^{}]{0,1400}?"nickname"\s*:\s*"([^"]{1,120})"',
+        html,
+        re.DOTALL,
+    )
+    if m:
+        return m.group(1).strip()[:128]
+    m2 = re.search(r'"nickname"\s*:\s*"([^"]{1,120})"', html)
+    if m2:
+        return m2.group(1).strip()[:128]
+    return None
+
+
 def _main_child() -> None:
     url = sys.stdin.read().strip()
     if not url:
@@ -236,6 +300,7 @@ def _main_child() -> None:
         sys.exit(1)
     try:
         d = _impl_fetch_in_child_process(url)
+        d["html"] = d.get("html") or ""
         print(json.dumps({"ok": True, **d}))
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e)}))

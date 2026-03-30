@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.10"
+CLIENT_VERSION_FALLBACK = "1.2.11"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -682,6 +682,10 @@ class App:
             b.pack(side="left", padx=_btn_pad)
             self._widgets_need_wecom.append(b)
 
+        bottom = ttk.Frame(self._main_fr, padding=(12, 6, 12, 10))
+        bottom.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(bottom, textvariable=self.status_var).pack(side=tk.LEFT)
+
         mid_pane = ttk.PanedWindow(self._main_fr, orient=tk.VERTICAL)
         mid_pane.pack(fill="both", expand=True, padx=12, pady=(0, 6))
 
@@ -782,10 +786,6 @@ class App:
             highlightcolor=_THEME["accent"],
         )
         self.log_text.pack(fill="both", expand=True)
-
-        bottom = ttk.Frame(self._main_fr, padding=(12, 6, 12, 10))
-        bottom.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Label(bottom, textvariable=self.status_var).pack(side=tk.LEFT)
 
     def _on_task_url_focus_out(self, _event=None):
         if getattr(self, "_wecom_blocked", False):
