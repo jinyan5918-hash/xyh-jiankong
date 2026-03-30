@@ -23,7 +23,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-DIGG_PATTERN = re.compile(r'"digg_count"\s*:\s*(\d+)')
+# 与 douyin_fetch._DIGG_PATTERNS 保持一致，避免仅 Playwright 路径漏解析
+_DIGG_PATTERNS = (
+    re.compile(r'"digg_count"\s*:\s*(\d+)'),
+    re.compile(r'"digg_count"\s*:\s*"(\d+)"'),
+    re.compile(r'"like_count"\s*:\s*(\d+)'),
+    re.compile(r'"admire_count"\s*:\s*(\d+)'),
+    re.compile(r"\bdigg_count\s*[=:]\s*(\d+)"),
+)
 COMMENT_PATTERN = re.compile(r'"comment_count"\s*:\s*(\d+)')
 
 _UA_MOBILE = (
@@ -58,10 +65,16 @@ def _reset_signals_for_child() -> None:
 
 
 def _extract_likes_from_html(html: str) -> int | None:
-    matches = DIGG_PATTERN.findall(html)
-    if not matches:
+    nums: list[int] = []
+    for p in _DIGG_PATTERNS:
+        for x in p.findall(html):
+            try:
+                nums.append(int(x))
+            except Exception:
+                continue
+    if not nums:
         return None
-    return max(int(x) for x in matches)
+    return max(nums)
 
 
 def _extract_comment_count_from_html(html: str) -> int | None:
@@ -111,6 +124,10 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
                 time.sleep(random.uniform(0.8, 2.8))
                 page.goto(url, wait_until="domcontentloaded", timeout=90_000)
                 time.sleep(random.uniform(0.5, 1.5))
+                try:
+                    page.wait_for_load_state("networkidle", timeout=12_000)
+                except Exception:
+                    pass
                 html = page.content()
                 likes = _extract_likes_from_html(html)
                 cc = _extract_comment_count_from_html(html)
@@ -129,6 +146,10 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
                         "html": html[:500000],
                     }
                 page.wait_for_timeout(3000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=12_000)
+                except Exception:
+                    pass
                 html = page.content()
                 likes = _extract_likes_from_html(html)
                 cc = _extract_comment_count_from_html(html)
