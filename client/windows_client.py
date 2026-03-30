@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.12"
+CLIENT_VERSION_FALLBACK = "1.2.13"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -374,10 +374,6 @@ class App:
         self.interval_max_var = tk.StringVar(value="480")
         self.wecom_webhook_var = tk.StringVar(value=load_local_wecom_pref())
         self.status_var = tk.StringVar(value="状态：未登录")
-        self._fetch_author_after_id: str | None = None
-        self._name_placeholder = "自动识别"
-        self._name_placeholder_on = False
-        self._name_entry: tk.Entry | None = None
         self._wecom_blocked = False
         self._widgets_need_wecom: list[tk.Widget] = []
         self._tasks_cache: list[dict] = []
@@ -622,28 +618,13 @@ class App:
         task_form = ttk.Frame(self._main_fr, padding=12)
         task_form.pack(fill="x")
         ttk.Label(task_form, text="名称").pack(side="left")
-        self._name_entry = tk.Entry(
-            task_form,
-            textvariable=self.name_var,
-            width=14,
-            relief="flat",
-            bg=_THEME["card"],
-            fg=_THEME["muted"],
-            insertbackground=_THEME["fg"],
-            highlightthickness=1,
-            highlightbackground=_THEME["btn_active"],
-            highlightcolor=_THEME["accent"],
-        )
-        self._name_entry.pack(side="left", padx=(8, 8))
-        self._name_entry.bind("<FocusIn>", self._on_name_focus_in)
-        self._name_entry.bind("<FocusOut>", self._on_name_focus_out)
-        self._set_name_placeholder()
-        self._widgets_need_wecom.append(self._name_entry)
+        te1 = ttk.Entry(task_form, textvariable=self.name_var, width=14)
+        te1.pack(side="left", padx=(8, 8))
+        self._widgets_need_wecom.append(te1)
 
         ttk.Label(task_form, text="视频链接").pack(side="left")
         te2 = ttk.Entry(task_form, textvariable=self.url_var, width=48)
         te2.pack(side="left", padx=(8, 8))
-        te2.bind("<FocusOut>", self._on_task_url_focus_out)
         self._widgets_need_wecom.append(te2)
         ttk.Label(task_form, text="每增长(赞)提醒").pack(side="left")
         te3 = ttk.Entry(task_form, textvariable=self.step_var, width=10)
@@ -787,105 +768,6 @@ class App:
             highlightcolor=_THEME["accent"],
         )
         self.log_text.pack(fill="both", expand=True)
-
-    def _on_task_url_focus_out(self, _event=None):
-        if getattr(self, "_wecom_blocked", False):
-            return
-        self._schedule_fetch_task_author()
-
-    def _schedule_fetch_task_author(self) -> None:
-        if getattr(self, "_wecom_blocked", False):
-            return
-        aid = self._fetch_author_after_id
-        if aid is not None:
-            try:
-                self.root.after_cancel(aid)
-            except Exception:
-                pass
-        self._fetch_author_after_id = self.root.after(450, self._fetch_task_author_nickname)
-
-    def _fetch_task_author_nickname(self) -> None:
-        self._fetch_author_after_id = None
-        if not self.token or getattr(self, "_wecom_blocked", False):
-            return
-        try:
-            url = normalize_task_url(self.url_var.get())
-        except Exception:
-            return
-        if not url:
-            return
-        try:
-            r = requests.get(
-                f"{self.api_base}/video/author_nickname",
-                params={"url": url},
-                headers=self._headers(),
-                timeout=25,
-            )
-            if r.status_code != 200:
-                return
-            nick = (r.json().get("nickname") or "").strip()
-            if nick:
-                self._set_name_real(nick[:64])
-        except Exception:
-            pass
-
-    def _on_name_focus_in(self, _event=None):
-        if self._name_placeholder_on:
-            self.name_var.set("")
-            self._name_placeholder_on = False
-            if self._name_entry is not None:
-                self._name_entry.configure(fg=_THEME["fg"])
-
-    def _on_name_focus_out(self, _event=None):
-        if not self._effective_task_name():
-            self._set_name_placeholder()
-
-    def _set_name_placeholder(self) -> None:
-        self.name_var.set(self._name_placeholder)
-        self._name_placeholder_on = True
-        if self._name_entry is not None:
-            self._name_entry.configure(fg=_THEME["muted"])
-
-    def _set_name_real(self, value: str) -> None:
-        self.name_var.set(value)
-        self._name_placeholder_on = False
-        if self._name_entry is not None:
-            self._name_entry.configure(fg=_THEME["fg"])
-
-    def _effective_task_name(self) -> str:
-        v = self.name_var.get().strip()
-        if not v:
-            return ""
-        if self._name_placeholder_on or v == self._name_placeholder:
-            return ""
-        return v
-
-    def _ensure_name_sync_from_url(self) -> None:
-        """创建/更新任务前：若名称为空则同步请求作者昵称。"""
-        if self._effective_task_name():
-            return
-        if not self.token:
-            return
-        try:
-            url = normalize_task_url(self.url_var.get())
-        except Exception:
-            return
-        if not url:
-            return
-        try:
-            r = requests.get(
-                f"{self.api_base}/video/author_nickname",
-                params={"url": url},
-                headers=self._headers(),
-                timeout=25,
-            )
-            if r.status_code != 200:
-                return
-            nick = (r.json().get("nickname") or "").strip()
-            if nick:
-                self._set_name_real(nick[:64])
-        except Exception:
-            pass
 
     def _tree_context_menu(self, event):
         """在鼠标释放时弹出右键菜单（比 Button-3 按下时更利于先选中行）。"""
@@ -1521,11 +1403,8 @@ class App:
         except ValueError as e:
             messagebox.showerror("链接无效", str(e))
             return
-        # 默认自动识别名称，失败时回退“未命名任务”
-        self._set_name_placeholder()
-        self._ensure_name_sync_from_url()
         payload = {
-            "name": self._effective_task_name() or "未命名任务",
+            "name": self.name_var.get().strip() or "未命名任务",
             "video_url": url,
             "target_likes": 0,
             "notify_step_likes": step,
@@ -1549,7 +1428,7 @@ class App:
         values = self.tree.item(selected[0], "values")
         if len(values) < 6:
             return
-        self._set_name_real(str(values[1]))
+        self.name_var.set(str(values[1]))
         self.url_var.set(str(values[2]))
         try:
             tid = int(values[0])
@@ -1586,12 +1465,8 @@ class App:
         except ValueError as e:
             messagebox.showerror("链接无效", str(e))
             return
-        old_url = str(values[2]).strip() if len(values) > 2 else ""
-        if old_url != url:
-            self._set_name_placeholder()
-        self._ensure_name_sync_from_url()
         payload = {
-            "name": self._effective_task_name() or "未命名任务",
+            "name": self.name_var.get().strip() or "未命名任务",
             "video_url": url,
             "target_likes": 0,
             "notify_step_likes": step,
