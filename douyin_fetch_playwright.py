@@ -26,6 +26,9 @@ from typing import Any
 
 from douyin_fetch import _digg_from_item_api_json, _extract_item_id, _fetch_likes_by_item_api
 
+# --pw-child 失败且 DOUYIN_PLAYWRIGHT_DEBUG=1 时写入，供 _main_child 打进 stdout JSON
+_PW_LAST_FAIL_DIAG: dict[str, Any] | None = None
+
 # 与 douyin_fetch._DIGG_PATTERNS 保持一致，避免仅 Playwright 路径漏解析
 _DIGG_PATTERNS = (
     re.compile(r'"digg_count"\s*:\s*(\d+)'),
@@ -184,12 +187,10 @@ def _debug_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _playwright_failure_diag(
+def _playwright_failure_diag_payload(
     page: Any, html: str, net_diggs: list[int], diag_urls: list[str], has_cookie: bool
-) -> None:
-    """.stderr 输出一行 JSON，便于区分：机房空壳页 / 无 XHR 数据 / Cookie 未带上等。"""
-    import sys
-
+) -> dict[str, Any]:
+    """区分：机房空壳页 / 无 XHR 数据 / Cookie 未带上等。"""
     title = ""
     try:
         title = (page.title() or "")[:200]
@@ -208,7 +209,7 @@ def _playwright_failure_diag(
         ),
         "maybe_empty_shell": "digg_count" not in html and "aweme_id" not in html and len(html) < 8000,
     }
-    payload = {
+    return {
         "playwright_debug": True,
         "final_url": final_url[:400],
         "title": title,
@@ -219,6 +220,11 @@ def _playwright_failure_diag(
         "do_have_cookie_header": has_cookie,
         "hints": hints,
     }
+
+
+def _emit_diag_stderr(payload: dict[str, Any]) -> None:
+    import sys
+
     try:
         print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
     except Exception:
@@ -227,6 +233,8 @@ def _playwright_failure_diag(
 
 def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[str, Any]:
     """仅在子进程中调用：一次 with 块内完成 launch → 抓取 → 关闭。"""
+    global _PW_LAST_FAIL_DIAG
+    _PW_LAST_FAIL_DIAG = None
     url = _pick_short_share_url(url.strip())
     _reset_signals_for_child()
     from playwright.sync_api import sync_playwright
@@ -364,13 +372,15 @@ def _impl_fetch_in_child_process(url: str, require_likes: bool = True) -> dict[s
                         "html": html[:500000],
                     }
                 if want_debug:
-                    _playwright_failure_diag(
+                    pl = _playwright_failure_diag_payload(
                         page,
                         html,
                         net_diggs,
                         diag_urls if diag_urls is not None else [],
                         bool(cookie_header),
                     )
+                    _PW_LAST_FAIL_DIAG = pl
+                    _emit_diag_stderr(pl)
                 raise ValueError(
                     "Playwright 页面中未解析到 digg_count（可能遇验证页或链接失效）"
                 )
@@ -542,7 +552,10 @@ def _main_child() -> None:
         d["html"] = d.get("html") or ""
         print(json.dumps({"ok": True, **d}))
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        out: dict[str, Any] = {"ok": False, "error": str(e)}
+        if _debug_truthy("DOUYIN_PLAYWRIGHT_DEBUG") and _PW_LAST_FAIL_DIAG is not None:
+            out["debug"] = _PW_LAST_FAIL_DIAG
+        print(json.dumps(out, ensure_ascii=False))
         sys.exit(1)
 
 
@@ -556,7 +569,10 @@ def _main_author_child() -> None:
         d["html"] = d.get("html") or ""
         print(json.dumps({"ok": True, **d}))
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        out: dict[str, Any] = {"ok": False, "error": str(e)}
+        if _debug_truthy("DOUYIN_PLAYWRIGHT_DEBUG") and _PW_LAST_FAIL_DIAG is not None:
+            out["debug"] = _PW_LAST_FAIL_DIAG
+        print(json.dumps(out, ensure_ascii=False))
         sys.exit(1)
 
 
