@@ -170,20 +170,32 @@ class MonitorScheduler:
                 tasks = list(tasks)
                 random.shuffle(tasks)
                 for task in tasks:
-                    state = self._states.setdefault(task.id, TaskRuntimeState())
+                    tid = int(task.id)
+                    state = self._states.setdefault(tid, TaskRuntimeState())
                     if state.next_run_at and now < state.next_run_at:
                         continue
-                    self._run_task(task, state)
+                    # 必须在独立 Session 内重新加载任务：外层 query 的 ORM 对象不能跨 Session merge
+                    self._run_task(tid, state)
                     if self.stagger_sec_max > 0:
                         time.sleep(random.uniform(0, self.stagger_sec_max))
             finally:
                 db.close()
             time.sleep(1.0)
 
-    def _run_task(self, task: MonitorTask, state: TaskRuntimeState) -> None:
+    def _run_task(self, task_id: int, state: TaskRuntimeState) -> None:
         state.last_run_at = time.time()
         db: Session = SessionLocal()
         try:
+            task = (
+                db.query(MonitorTask)
+                .options(joinedload(MonitorTask.user))
+                .filter(MonitorTask.id == task_id)
+                .first()
+            )
+            if task is None:
+                return
+            if not bool(task.enabled) or bool(task.task_paused):
+                return
             if not self._fetch_metrics:
                 raise RuntimeError("fetch_metrics not available")
             metrics = self._fetch_metrics(task.video_url, insecure_ssl=True) or {}

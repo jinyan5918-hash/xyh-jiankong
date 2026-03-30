@@ -256,3 +256,74 @@ def fetch_metrics(url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool 
         "comment_count": None,
         "latest_comment": None,
     }
+
+
+def _author_from_iteminfo_json(data: dict) -> str | None:
+    try:
+        if data.get("item_list"):
+            author = (data["item_list"][0] or {}).get("author") or {}
+            n = author.get("nickname")
+            if n:
+                return str(n).strip()
+        if data.get("aweme_detail"):
+            author = (data["aweme_detail"] or {}).get("author") or {}
+            n = author.get("nickname")
+            if n:
+                return str(n).strip()
+    except Exception:
+        pass
+    return None
+
+
+def fetch_author_nickname(
+    url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool = True
+) -> str | None:
+    """
+    根据视频分享链接解析作者昵称（用于客户端自动填任务名）。
+    优先走 item_id + 公开接口；失败时从页面 HTML 中尽力匹配 nickname 字段。
+    """
+    prefer_mobile = (
+        os.getenv("DOUYIN_PREFER_MOBILE_UA", "1").strip() not in ("0", "false", "no")
+    )
+    html, final_url = _request_text(
+        url,
+        insecure_ssl=insecure_ssl,
+        auto_fallback_ssl=auto_fallback_ssl,
+        mobile_ua=prefer_mobile,
+    )
+    normalized_final = final_url.rstrip("/")
+    if normalized_final in {"https://www.douyin.com", "https://douyin.com"}:
+        return None
+    item_id = _extract_item_id(final_url, html)
+    if item_id:
+        api_candidates = [
+            f"https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids={item_id}",
+            f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={item_id}",
+        ]
+        for api_url in api_candidates:
+            try:
+                body, _ = _request_text(
+                    api_url, insecure_ssl=insecure_ssl, auto_fallback_ssl=True
+                )
+                data = json.loads(body)
+                nick = _author_from_iteminfo_json(data)
+                if nick:
+                    return nick[:128]
+            except Exception:
+                continue
+    # 页面内嵌 JSON 兜底：优先 author.nickname，避免误匹配评论区
+    m = re.search(
+        r'"author"\s*:\s*\{[^{}]{0,1200}?"nickname"\s*:\s*"([^"]{1,120})"',
+        html,
+        re.DOTALL,
+    )
+    if m:
+        raw = m.group(1).strip()
+        if raw and raw not in ("null", "undefined"):
+            return raw[:128]
+    m2 = re.search(r'"nickname"\s*:\s*"([^"]{1,120})"', html)
+    if m2:
+        raw = m2.group(1).strip()
+        if raw and raw not in ("null", "undefined"):
+            return raw[:128]
+    return None

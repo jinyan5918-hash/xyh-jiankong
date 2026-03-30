@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.8"
+CLIENT_VERSION_FALLBACK = "1.2.9"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -203,34 +203,6 @@ def _paint_login_deco(canvas: tk.Canvas, w: int, h: int) -> None:
         )
 
 
-def _paint_main_strip_deco(canvas: tk.Canvas, w: int, h: int) -> None:
-    canvas.delete("deco")
-    tag = "deco"
-    w = max(w, 2)
-    h = max(h, 2)
-    canvas.create_rectangle(0, 0, w, h, fill=_THEME["bg"], outline="", tags=tag)
-    y0 = h * 0.35
-    canvas.create_polygon(
-        _deco_wave_polygon(w, h, y0, 5.0, w * 0.35, 0.5),
-        fill=_DECO["wave_a"],
-        outline="",
-        tags=tag,
-    )
-    canvas.create_polygon(
-        _deco_wave_polygon(w, h, y0 + 8.0, 4.0, w * 0.28, 1.8),
-        fill=_DECO["wave_b"],
-        outline="",
-        tags=tag,
-    )
-    kx, ky = w - 36, h * 0.48
-    ss = min(h / 56.0, 1.0) * 0.55
-    canvas.create_oval(kx - 18 * ss, ky - 16 * ss, kx + 18 * ss, ky + 14 * ss, fill=_DECO["kitty_face"], outline="#ffb6c1", width=1, tags=tag)
-    canvas.create_oval(kx - 8 * ss, ky - 4 * ss, kx - 2 * ss, ky + 2 * ss, fill="#4a3728", outline="", tags=tag)
-    canvas.create_oval(kx + 2 * ss, ky - 4 * ss, kx + 8 * ss, ky + 2 * ss, fill="#4a3728", outline="", tags=tag)
-    canvas.create_text(w * 0.04, h * 0.5, text="✿", fill=_DECO["kitty_bow"], font=("Segoe UI Symbol", 12), tags=tag)
-    canvas.create_text(w * 0.12, h * 0.45, text="～", fill=_DECO["wave_b"], font=_ui_font(11), tags=tag)
-
-
 def _ui_font(size: int = 10, bold: bool = False) -> tuple:
     if sys.platform == "win32":
         family = "Microsoft YaHei UI"
@@ -381,7 +353,7 @@ class App:
     def __init__(self, root: tk.Tk, api_base: str):
         self.root = root
         self.api_base = api_base.rstrip("/")
-        self.root.title(f"企业版抖音点赞监控客户端 v{get_client_version()}")
+        self.root.title(f"企业版账号辅助客户端 v{get_client_version()}")
         # 尽量紧凑：任务表支持滚动，窗口不必很大
         self.root.geometry("980x720")
         try:
@@ -402,6 +374,7 @@ class App:
         self.interval_max_var = tk.StringVar(value="480")
         self.wecom_webhook_var = tk.StringVar(value=load_local_wecom_pref())
         self.status_var = tk.StringVar(value="状态：未登录")
+        self._fetch_author_after_id: str | None = None
         self._wecom_blocked = False
         self._widgets_need_wecom: list[tk.Widget] = []
         self._tasks_cache: list[dict] = []
@@ -420,7 +393,6 @@ class App:
         self._welcome_fr: tk.Frame | None = None
         self._welcome_version_label: ttk.Label | None = None
         self._welcome_canvas: tk.Canvas | None = None
-        self._main_top_canvas: tk.Canvas | None = None
         self._main_fr: ttk.Frame | None = None
         self._apply_styles()
         self._build_welcome()
@@ -516,13 +488,6 @@ class App:
         h = max(event.height, 2)
         _paint_login_deco(self._welcome_canvas, w, h)
 
-    def _on_main_top_canvas_configure(self, event):
-        if self._main_top_canvas is None or event.widget is not self._main_top_canvas:
-            return
-        w = max(event.width, 2)
-        h = max(event.height, 2)
-        _paint_main_strip_deco(self._main_top_canvas, w, h)
-
     def _build_welcome(self) -> None:
         self._welcome_fr = tk.Frame(self.root, bg=_THEME["bg"])
         self._welcome_canvas = tk.Canvas(
@@ -557,7 +522,7 @@ class App:
         text_stack.pack(pady=(0, 6))
         ttk.Label(
             text_stack,
-            text="企业版抖音点赞监控客户端",
+            text="企业版账号辅助客户端",
             font=_ui_font(11),
             foreground="#6f5f82",
             justify="center",
@@ -592,15 +557,6 @@ class App:
     def _build_main(self) -> None:
         pad = {"padx": 6, "pady": 4}
         self._main_fr = ttk.Frame(self.root)
-        self._main_top_canvas = tk.Canvas(
-            self._main_fr,
-            height=56,
-            highlightthickness=0,
-            bd=0,
-            bg=_THEME["bg"],
-        )
-        self._main_top_canvas.pack(fill=tk.X)
-        self._main_top_canvas.bind("<Configure>", self._on_main_top_canvas_configure)
 
         self.wecom_gate_label = ttk.Label(
             self._main_fr,
@@ -662,13 +618,10 @@ class App:
 
         task_form = ttk.Frame(self._main_fr, padding=12)
         task_form.pack(fill="x")
-        ttk.Label(task_form, text="名称").pack(side="left")
-        te1 = ttk.Entry(task_form, textvariable=self.name_var, width=14)
-        te1.pack(side="left", padx=(8, 8))
-        self._widgets_need_wecom.append(te1)
         ttk.Label(task_form, text="视频链接").pack(side="left")
-        te2 = ttk.Entry(task_form, textvariable=self.url_var, width=52)
+        te2 = ttk.Entry(task_form, textvariable=self.url_var, width=58)
         te2.pack(side="left", padx=(8, 8))
+        te2.bind("<FocusOut>", self._on_task_url_focus_out)
         self._widgets_need_wecom.append(te2)
         ttk.Label(task_form, text="每增长(赞)提醒").pack(side="left")
         te3 = ttk.Entry(task_form, textvariable=self.step_var, width=10)
@@ -708,7 +661,7 @@ class App:
             self._widgets_need_wecom.append(b)
 
         mid_pane = ttk.PanedWindow(self._main_fr, orient=tk.VERTICAL)
-        mid_pane.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        mid_pane.pack(fill="both", expand=True, padx=12, pady=(0, 6))
 
         table_wrap = ttk.Frame(mid_pane, padding=(0, 0, 0, 6))
         sort_bar = ttk.Frame(table_wrap)
@@ -808,9 +761,77 @@ class App:
         )
         self.log_text.pack(fill="both", expand=True)
 
-        bottom = ttk.Frame(self._main_fr, padding=(12, 0, 12, 12))
-        bottom.pack(fill="x")
-        ttk.Label(bottom, textvariable=self.status_var).pack(side="left")
+        bottom = ttk.Frame(self._main_fr, padding=(12, 6, 12, 10))
+        bottom.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(bottom, textvariable=self.status_var).pack(side=tk.LEFT)
+
+    def _on_task_url_focus_out(self, _event=None):
+        if getattr(self, "_wecom_blocked", False):
+            return
+        self._schedule_fetch_task_author()
+
+    def _schedule_fetch_task_author(self) -> None:
+        if getattr(self, "_wecom_blocked", False):
+            return
+        aid = self._fetch_author_after_id
+        if aid is not None:
+            try:
+                self.root.after_cancel(aid)
+            except Exception:
+                pass
+        self._fetch_author_after_id = self.root.after(450, self._fetch_task_author_nickname)
+
+    def _fetch_task_author_nickname(self) -> None:
+        self._fetch_author_after_id = None
+        if not self.token or getattr(self, "_wecom_blocked", False):
+            return
+        try:
+            url = normalize_task_url(self.url_var.get())
+        except Exception:
+            return
+        if not url:
+            return
+        try:
+            r = requests.get(
+                f"{self.api_base}/video/author_nickname",
+                params={"url": url},
+                headers=self._headers(),
+                timeout=25,
+            )
+            if r.status_code != 200:
+                return
+            nick = (r.json().get("nickname") or "").strip()
+            if nick:
+                self.name_var.set(nick[:64])
+        except Exception:
+            pass
+
+    def _ensure_name_sync_from_url(self) -> None:
+        """创建/更新任务前：若名称为空则同步请求作者昵称。"""
+        if self.name_var.get().strip():
+            return
+        if not self.token:
+            return
+        try:
+            url = normalize_task_url(self.url_var.get())
+        except Exception:
+            return
+        if not url:
+            return
+        try:
+            r = requests.get(
+                f"{self.api_base}/video/author_nickname",
+                params={"url": url},
+                headers=self._headers(),
+                timeout=25,
+            )
+            if r.status_code != 200:
+                return
+            nick = (r.json().get("nickname") or "").strip()
+            if nick:
+                self.name_var.set(nick[:64])
+        except Exception:
+            pass
 
     def _tree_context_menu(self, event):
         """在鼠标释放时弹出右键菜单（比 Button-3 按下时更利于先选中行）。"""
@@ -1446,6 +1467,9 @@ class App:
         except ValueError as e:
             messagebox.showerror("链接无效", str(e))
             return
+        # 无名称输入框：新建任务名以当前链接解析为准，避免沿用表格上一行的名称
+        self.name_var.set("")
+        self._ensure_name_sync_from_url()
         payload = {
             "name": self.name_var.get().strip() or "未命名任务",
             "video_url": url,
@@ -1508,6 +1532,10 @@ class App:
         except ValueError as e:
             messagebox.showerror("链接无效", str(e))
             return
+        old_url = str(values[2]).strip() if len(values) > 2 else ""
+        if old_url != url:
+            self.name_var.set("")
+        self._ensure_name_sync_from_url()
         payload = {
             "name": self.name_var.get().strip() or "未命名任务",
             "video_url": url,

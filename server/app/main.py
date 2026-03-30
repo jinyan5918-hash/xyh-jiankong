@@ -1,7 +1,8 @@
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import and_, false, func, inspect, or_, text
 from sqlalchemy.orm import Session
@@ -437,6 +438,28 @@ def list_tasks(
             )
         )
     return result
+
+
+@app.get("/video/author_nickname")
+def video_author_nickname(
+    url: str = Query(..., min_length=5),
+    _current_user: User = Depends(get_current_user),
+):
+    """根据视频链接解析作者昵称（供客户端自动填任务名称）。"""
+    try:
+        nu = normalize_douyin_url_safe(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    root = Path(__file__).resolve().parents[2]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from douyin_fetch import fetch_author_nickname as _fetch_author_nickname
+
+    try:
+        nick = _fetch_author_nickname(nu)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"nickname": (nick or "").strip()}
 
 
 @app.post("/tasks", response_model=TaskOut)
