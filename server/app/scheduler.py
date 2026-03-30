@@ -2,6 +2,7 @@ import os
 import random
 import threading
 import time
+import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,8 +14,8 @@ from .models import CommentAlert, MonitorRecord, MonitorTask, ReachAlert, User
 from .wecom import pick_webhook_for_user, push_comment_alert, push_reach_alert
 
 
-def _load_fetch_metrics():
-    # 可通过 DOUYIN_USE_PLAYWRIGHT=1 启用真浏览器路径（见 docs/DOUYIN_FETCH_EVOLUTION.md）
+def _load_pw_fetch_metrics():
+    """仅加载 Playwright 抓取（DOUYIN_USE_PLAYWRIGHT=1）。机房场景应优先走此路径。"""
     root = Path(__file__).resolve().parents[2]
     use_pw = os.getenv("DOUYIN_USE_PLAYWRIGHT", "").strip().lower() in (
         "1",
@@ -22,19 +23,15 @@ def _load_fetch_metrics():
         "yes",
         "on",
     )
-    candidates = (
-        ("douyin_fetch_playwright.py", "douyin_fetch.py", "douyin_monitor_gui.py")
-        if use_pw
-        else ("douyin_fetch.py", "douyin_monitor_gui.py")
-    )
-    for filename in candidates:
+    if not use_pw:
+        return None
+    for filename in ("douyin_fetch_playwright.py",):
         root_file = root / filename
         if not root_file.exists():
             continue
         import importlib.util
 
-        mod_name = root_file.stem
-        spec = importlib.util.spec_from_file_location(mod_name, str(root_file))
+        spec = importlib.util.spec_from_file_location(root_file.stem, str(root_file))
         if not spec or not spec.loader:
             continue
         module = importlib.util.module_from_spec(spec)
@@ -47,45 +44,26 @@ def _load_fetch_metrics():
             return fn
         fn2 = getattr(module, "fetch_likes", None)
         if fn2 is not None:
-            # 旧接口：仅点赞
+
             def _metrics(url: str, insecure_ssl: bool = True):
-                return {"likes": int(fn2(url, insecure_ssl=insecure_ssl)), "comment_count": None, "latest_comment": None}
+                return {
+                    "likes": int(fn2(url, insecure_ssl=insecure_ssl)),
+                    "comment_count": None,
+                    "latest_comment": None,
+                }
 
             return _metrics
-    # 声明了 Playwright 但加载失败时回退 HTTP，避免整站监控停摆
-    if use_pw:
-        for filename in ("douyin_fetch.py", "douyin_monitor_gui.py"):
-            root_file = root / filename
-            if not root_file.exists():
-                continue
-            import importlib.util
-
-            spec = importlib.util.spec_from_file_location(
-                root_file.stem, str(root_file)
-            )
-            if not spec or not spec.loader:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except Exception:
-                continue
-            fn = getattr(module, "fetch_metrics", None)
-            if fn is not None:
-                print(
-                    "[scheduler] DOUYIN_USE_PLAYWRIGHT=1 但 Playwright 未就绪，已回退 douyin_fetch.py"
-                )
-                return fn
-            fn2 = getattr(module, "fetch_likes", None)
-            if fn2 is not None:
-                print(
-                    "[scheduler] DOUYIN_USE_PLAYWRIGHT=1 但 Playwright 未就绪，已回退 douyin_fetch.py"
-                )
-                def _metrics(url: str, insecure_ssl: bool = True):
-                    return {"likes": int(fn2(url, insecure_ssl=insecure_ssl)), "comment_count": None, "latest_comment": None}
-
-                return _metrics
+    print(
+        "[scheduler] 已设置 DOUYIN_USE_PLAYWRIGHT=1 但 Playwright 模块未就绪，将仅用 HTTP（易被抖音 403）"
+    )
     return None
+
+
+def _is_likely_http_403(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
+        return True
+    s = str(exc).lower()
+    return "403" in s or "forbidden" in s
 
 
 def _load_http_fetch_metrics():
@@ -137,8 +115,14 @@ class MonitorScheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._states: dict[int, TaskRuntimeState] = {}
-        self._fetch_metrics = _load_fetch_metrics()
-        self._fetch_metrics_http_fallback = _load_http_fetch_metrics()
+        self._fetch_metrics_pw = _load_pw_fetch_metrics()
+        self._fetch_metrics_http = _load_http_fetch_metrics()
+        if self._fetch_metrics_pw is None and self._fetch_metrics_http is not None:
+            print(
+                "[scheduler] 提示：未启用或未能加载 Playwright，仅使用 HTTP 抓取；"
+                "机房 IP 易被抖音返回 403。请在环境变量设置 DOUYIN_USE_PLAYWRIGHT=1、"
+                "playwright install chromium，并配置 DOUYIN_COOKIE 或 DOUYIN_PROXY_POOL。"
+            )
         self.interval_min_sec = int(os.getenv("SCHED_INTERVAL_MIN_SEC", "180"))
         self.interval_max_sec = int(os.getenv("SCHED_INTERVAL_MAX_SEC", "480"))
         self.cooldown_min_sec = int(os.getenv("SCHED_COOLDOWN_MIN_SEC", "900"))
@@ -226,16 +210,39 @@ class MonitorScheduler:
                 return
             if not bool(task.enabled) or bool(task.task_paused):
                 return
-            if not self._fetch_metrics:
+            if self._fetch_metrics_pw is None and self._fetch_metrics_http is None:
                 raise RuntimeError("fetch_metrics not available")
-            try:
-                metrics = self._fetch_metrics(task.video_url, insecure_ssl=True) or {}
-            except Exception as e_pw:
-                fb = self._fetch_metrics_http_fallback
-                if fb is None:
+            metrics: dict[str, Any] | None = None
+            pw_err: BaseException | None = None
+            if self._fetch_metrics_pw is not None:
+                try:
+                    metrics = self._fetch_metrics_pw(task.video_url, insecure_ssl=True)
+                except Exception as e_pw:
+                    pw_err = e_pw
+                    print(f"[scheduler] task={task.id} Playwright失败，回退HTTP: {e_pw}")
+            if metrics is None:
+                if self._fetch_metrics_http is None:
+                    if pw_err is not None:
+                        raise pw_err
+                    raise RuntimeError("fetch_metrics not available")
+                try:
+                    metrics = self._fetch_metrics_http(task.video_url, insecure_ssl=True) or {}
+                except Exception as e_http:
+                    if _is_likely_http_403(e_http):
+                        raise RuntimeError(
+                            "抖音返回 HTTP 403（机房/高频请求常被风控）。"
+                            "请管理员在 jiankong-api 环境变量中配置至少一项："
+                            "DOUYIN_COOKIE=（从浏览器打开抖音后复制整段 Cookie）；"
+                            "或 DOUYIN_PROXY_POOL=（可用代理 URL，逗号分隔）；"
+                            "并确保 DOUYIN_USE_PLAYWRIGHT=1 且已执行 playwright install chromium，"
+                            "然后 systemctl restart jiankong-api。"
+                            f" 原始错误：{e_http}"
+                        ) from e_http
+                    if pw_err is not None:
+                        raise RuntimeError(
+                            f"Playwright 失败：{pw_err}；HTTP 回退失败：{e_http}"
+                        ) from e_http
                     raise
-                print(f"[scheduler] task={task.id} Playwright失败，回退HTTP: {e_pw}")
-                metrics = fb(task.video_url, insecure_ssl=True) or {}
             likes = int(metrics.get("likes") or 0)
             comment_count = metrics.get("comment_count")
             latest_comment = metrics.get("latest_comment")

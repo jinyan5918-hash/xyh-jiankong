@@ -127,6 +127,13 @@ def _request_headers(mobile_ua: bool) -> dict[str, str]:
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
+    # 部分机房直连易被 403，补全浏览器常见头（不保证绕过风控，略降特征）
+    if not mobile_ua:
+        h["Sec-Fetch-Dest"] = "document"
+        h["Sec-Fetch-Mode"] = "navigate"
+        h["Sec-Fetch-Site"] = "none"
+        h["Sec-Fetch-User"] = "?1"
+        h["Upgrade-Insecure-Requests"] = "1"
     if _DOUYIN_BROWSER_COOKIE:
         h["Cookie"] = _DOUYIN_BROWSER_COOKIE
     return h
