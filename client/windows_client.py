@@ -30,7 +30,7 @@ except Exception:
     plyer_notification = None
 
 # 与 client/release_version.txt 保持一致；若打包未带入该文件，标题仍显示此版本（发版请两处同改）
-CLIENT_VERSION_FALLBACK = "1.2.13"
+CLIENT_VERSION_FALLBACK = "1.2.14"
 
 PREFS_FILENAME = "user_prefs.json"
 
@@ -663,10 +663,18 @@ class App:
             b.pack(side="left", padx=_btn_pad)
             self._widgets_need_wecom.append(b)
 
-        bottom = ttk.Frame(self._main_fr, padding=(12, 4, 12, 8), height=28)
+        bottom = tk.Frame(self._main_fr, bg=_THEME["bg"], height=52)
         bottom.pack(side=tk.BOTTOM, fill=tk.X)
         bottom.pack_propagate(False)
-        ttk.Label(bottom, textvariable=self.status_var).pack(side=tk.LEFT, anchor="w")
+        tk.Label(
+            bottom,
+            textvariable=self.status_var,
+            bg=_THEME["bg"],
+            fg=_THEME["fg"],
+            font=_ui_font(10),
+            anchor="w",
+            justify="left",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(16, 12), pady=(12, 10))
 
         mid_pane = ttk.PanedWindow(self._main_fr, orient=tk.VERTICAL)
         mid_pane.pack(fill="both", expand=True, padx=12, pady=(0, 6))

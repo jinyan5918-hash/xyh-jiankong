@@ -13,11 +13,49 @@ import urllib.parse
 import urllib.request
 
 DIGG_PATTERN = re.compile(r'"digg_count"\s*:\s*(\d+)')
+_DIGG_PATTERNS = (
+    re.compile(r'"digg_count"\s*:\s*(\d+)'),
+    re.compile(r'"digg_count"\s*:\s*"(\d+)"'),
+    re.compile(r'"like_count"\s*:\s*(\d+)'),
+    re.compile(r'"admire_count"\s*:\s*(\d+)'),
+    re.compile(r"\bdigg_count\s*[=:]\s*(\d+)"),
+)
 VIDEO_ID_PATTERNS = [
     re.compile(r"/video/(\d+)"),
     re.compile(r'"aweme_id"\s*:\s*"(\d+)"'),
     re.compile(r'"itemId"\s*:\s*"(\d+)"'),
+    re.compile(r'"video_id"\s*:\s*(\d+)'),
+    re.compile(r"aweme_id=(\d+)"),
+    re.compile(r"modal_id=(\d+)"),
 ]
+
+
+def _extract_digg_counts_from_html(html: str) -> list[int]:
+    """页面内可能出现的多种点赞字段，取最大值更稳。"""
+    out: list[int] = []
+    for p in _DIGG_PATTERNS:
+        for x in p.findall(html):
+            try:
+                out.append(int(x))
+            except Exception:
+                continue
+    return out
+
+
+def _digg_from_item_api_json(data: dict) -> int | None:
+    """从 iteminfo / detail 返回 JSON 中尽量取出 digg_count。"""
+    try:
+        if data.get("item_list") and len(data["item_list"]) > 0:
+            st = (data["item_list"][0] or {}).get("statistics") or {}
+            if "digg_count" in st:
+                return int(st["digg_count"])
+        if data.get("aweme_detail"):
+            st = (data["aweme_detail"] or {}).get("statistics") or {}
+            if "digg_count" in st:
+                return int(st["digg_count"])
+    except Exception:
+        pass
+    return None
 COOKIE_JAR = http.cookiejar.CookieJar()
 PROXY_POOL = [x.strip() for x in os.getenv("DOUYIN_PROXY_POOL", "").split(",") if x.strip()]
 # 从本机浏览器开发者工具复制 Cookie（抖音页），可缓解云服务器 403；注意勿泄露
@@ -189,48 +227,59 @@ def _extract_item_id(final_url: str, html: str) -> str | None:
 
 
 def _fetch_likes_by_item_api(item_id: str, insecure_ssl: bool = False) -> int | None:
-    try:
-        share_html, _ = _request_text(
-            f"https://www.iesdouyin.com/share/video/{item_id}/",
-            insecure_ssl=insecure_ssl,
-            auto_fallback_ssl=True,
-            mobile_ua=True,
-        )
-        share_matches = DIGG_PATTERN.findall(share_html)
-        if share_matches:
-            return max(int(x) for x in share_matches)
-    except Exception:
-        pass
+    share_pages = [
+        f"https://m.douyin.com/share/video/{item_id}/",
+        f"https://www.iesdouyin.com/share/video/{item_id}/",
+    ]
+    for sp in share_pages:
+        try:
+            for mobile in (True, False):
+                share_html, _ = _request_text(
+                    sp,
+                    insecure_ssl=insecure_ssl,
+                    auto_fallback_ssl=True,
+                    mobile_ua=mobile,
+                )
+                nums = _extract_digg_counts_from_html(share_html)
+                if nums:
+                    return max(nums)
+        except Exception:
+            continue
 
     api_candidates = [
         f"https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids={item_id}",
         f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={item_id}",
+        f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={item_id}&aid=6383",
     ]
     for api_url in api_candidates:
-        try:
-            body, _ = _request_text(
-                api_url, insecure_ssl=insecure_ssl, auto_fallback_ssl=True
-            )
-            data = json.loads(body)
-            if data.get("item_list"):
-                return int(data["item_list"][0]["statistics"]["digg_count"])
-            if data.get("aweme_detail"):
-                return int(data["aweme_detail"]["statistics"]["digg_count"])
-        except Exception:
-            continue
+        for mobile in (False, True):
+            try:
+                body, _ = _request_text(
+                    api_url,
+                    insecure_ssl=insecure_ssl,
+                    auto_fallback_ssl=True,
+                    mobile_ua=mobile,
+                )
+                data = json.loads(body)
+                d = _digg_from_item_api_json(data)
+                if d is not None:
+                    return d
+            except Exception:
+                continue
     return None
 
 
-def fetch_likes(url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool = True) -> int:
-    # 短链 / 分享页用移动端 UA 首跳，减少 403（与 _request_text 内 403 重试互为补充）
-    prefer_mobile = (
-        os.getenv("DOUYIN_PREFER_MOBILE_UA", "1").strip() not in ("0", "false", "no")
-    )
+def _fetch_likes_once(
+    url: str,
+    insecure_ssl: bool,
+    auto_fallback_ssl: bool,
+    mobile_ua: bool,
+) -> int:
     html, final_url = _request_text(
         url,
         insecure_ssl=insecure_ssl,
         auto_fallback_ssl=auto_fallback_ssl,
-        mobile_ua=prefer_mobile,
+        mobile_ua=mobile_ua,
     )
 
     normalized_final = final_url.rstrip("/")
@@ -243,10 +292,28 @@ def fetch_likes(url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool = 
         if api_likes is not None:
             return api_likes
 
-    matches = DIGG_PATTERN.findall(html)
-    if not matches:
-        raise ValueError("未解析到点赞数（请确认链接是可访问的视频分享链接）")
-    return max(int(x) for x in matches)
+    nums = _extract_digg_counts_from_html(html)
+    if nums:
+        return max(nums)
+    raise ValueError("未解析到点赞数（请确认链接是可访问的视频分享链接）")
+
+
+def fetch_likes(url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool = True) -> int:
+    # 先按环境偏好 UA，再自动切换另一种 UA，减少偶发空白页/无 digg_count
+    prefer_mobile = (
+        os.getenv("DOUYIN_PREFER_MOBILE_UA", "1").strip() not in ("0", "false", "no")
+    )
+    order = [prefer_mobile, not prefer_mobile]
+    last: Exception | None = None
+    for mobile_ua in order:
+        try:
+            return _fetch_likes_once(url, insecure_ssl, auto_fallback_ssl, mobile_ua)
+        except Exception as e:
+            last = e
+            continue
+    if last is not None:
+        raise last
+    raise ValueError("未解析到点赞数（请确认链接是可访问的视频分享链接）")
 
 
 def fetch_metrics(url: str, insecure_ssl: bool = False, auto_fallback_ssl: bool = True) -> dict:
