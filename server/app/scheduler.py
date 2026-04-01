@@ -14,6 +14,36 @@ from .models import CommentAlert, MonitorRecord, MonitorTask, ReachAlert, User
 from .wecom import pick_webhook_for_user, push_comment_alert, push_reach_alert
 
 
+def _load_openapi_fetch_metrics_optional():
+    """
+    抖音开放平台 video/query（需 DOUYIN_USE_OPENAPI=1 + 用户口令 + open_id + 链接→item_id 映射）。
+    未配置或某链接无映射时返回 None，由 Playwright/HTTP 继续。
+    """
+    use = os.getenv("DOUYIN_USE_OPENAPI", "").strip().lower() in ("1", "true", "yes", "on")
+    if not use:
+        return None
+    root = Path(__file__).resolve().parents[2]
+    p = root / "douyin_openapi.py"
+    if not p.exists():
+        print("[scheduler] DOUYIN_USE_OPENAPI=1 但缺少 douyin_openapi.py")
+        return None
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("douyin_openapi", str(p))
+    if not spec or not spec.loader:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        print(f"[scheduler] 加载 douyin_openapi 失败: {e}")
+        return None
+    fn = getattr(mod, "fetch_metrics_optional", None)
+    if fn is None:
+        return None
+    return fn
+
+
 def _load_pw_fetch_metrics():
     """仅加载 Playwright 抓取（DOUYIN_USE_PLAYWRIGHT=1）。机房场景应优先走此路径。"""
     root = Path(__file__).resolve().parents[2]
@@ -115,6 +145,7 @@ class MonitorScheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._states: dict[int, TaskRuntimeState] = {}
+        self._fetch_openapi_optional = _load_openapi_fetch_metrics_optional()
         self._fetch_metrics_pw = _load_pw_fetch_metrics()
         self._fetch_metrics_http = _load_http_fetch_metrics()
         if self._fetch_metrics_pw is None and self._fetch_metrics_http is not None:
@@ -210,11 +241,22 @@ class MonitorScheduler:
                 return
             if not bool(task.enabled) or bool(task.task_paused):
                 return
-            if self._fetch_metrics_pw is None and self._fetch_metrics_http is None:
+            if (
+                self._fetch_openapi_optional is None
+                and self._fetch_metrics_pw is None
+                and self._fetch_metrics_http is None
+            ):
                 raise RuntimeError("fetch_metrics not available")
             metrics: dict[str, Any] | None = None
+            openapi_err: BaseException | None = None
+            if self._fetch_openapi_optional is not None:
+                try:
+                    metrics = self._fetch_openapi_optional(task.video_url, insecure_ssl=True)
+                except Exception as e_oa:
+                    openapi_err = e_oa
+                    print(f"[scheduler] task={task.id} 抖音开放平台失败，回退抓取: {e_oa}")
             pw_err: BaseException | None = None
-            if self._fetch_metrics_pw is not None:
+            if metrics is None and self._fetch_metrics_pw is not None:
                 try:
                     metrics = self._fetch_metrics_pw(task.video_url, insecure_ssl=True)
                 except Exception as e_pw:
@@ -224,6 +266,8 @@ class MonitorScheduler:
                 if self._fetch_metrics_http is None:
                     if pw_err is not None:
                         raise pw_err
+                    if openapi_err is not None:
+                        raise openapi_err
                     raise RuntimeError("fetch_metrics not available")
                 try:
                     metrics = self._fetch_metrics_http(task.video_url, insecure_ssl=True) or {}
@@ -231,10 +275,9 @@ class MonitorScheduler:
                     if _is_likely_http_403(e_http):
                         raise RuntimeError(
                             "抖音返回 HTTP 403（机房/高频请求常被风控）。"
-                            "请管理员在 jiankong-api 环境变量中配置至少一项："
-                            "DOUYIN_COOKIE=（从浏览器打开抖音后复制整段 Cookie）；"
-                            "或 DOUYIN_PROXY_POOL=（可用代理 URL，逗号分隔）；"
-                            "并确保 DOUYIN_USE_PLAYWRIGHT=1 且已执行 playwright install chromium，"
+                            "可选：对自有授权视频启用 DOUYIN_USE_OPENAPI=1 走开放平台（见 docs/DOUYIN_OPENAPI_INTEGRATION.md）。"
+                            "否则请配置：DOUYIN_COOKIE= 或 DOUYIN_PROXY_POOL=；"
+                            "并确保 DOUYIN_USE_PLAYWRIGHT=1 且已 playwright install chromium，"
                             "然后 systemctl restart jiankong-api。"
                             f" 原始错误：{e_http}"
                         ) from e_http
