@@ -24,7 +24,8 @@
 
 1. 在 [抖音开放平台控制台](https://developer.open-douyin.com/console) 创建**抖音小程序**（或符合文档要求的应用类型）。
 2. 申请 **用户数据能力 / 视频数据查询** 等权限。
-3. 在小程序内引导用户完成 **`tt.showDouyinOpenAuth`** 授权。
+3. 在小程序内引导用户完成 **`tt.showDouyinOpenAuth`** 授权。  
+   本仓库提供最小示例工程：**`douyin-miniapp-auth/`**（见该目录 `README.md`，需用**抖音开发者工具**打开、**真机**调试）。
 4. 服务端按文档用 `code` 换 **`/oauth/access_token/`** 得到 **`access-token`（act.…）** 与 **`open_id`**，并做好**刷新/续期**（过期需重新授权或 refresh，以官方文档为准）。
 
 `videoid` 与开放平台 `item_id` 的转换见：  

@@ -1,0 +1,8 @@
+<view class="wrap">
+  <view class="card">
+    <text class="title">jiankong 监控 · 抖音授权</text>
+    <text class="desc">用于获取「视频数据查询」权限（ma.video.bind），请在抖音 App 真机内使用本页。</text>
+    <button class="btn" type="primary" bindtap="onRequestAuth">授权视频数据</button>
+    <text class="hint">{{hint}}</text>
+  </view>
+</view>
