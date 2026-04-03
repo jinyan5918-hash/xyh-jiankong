@@ -2,7 +2,7 @@
   "miniprogramRoot": "./",
   "projectname": "jiankong-douyin-openauth",
   "description": "自有号授权 ma.video.bind，供 jiankong 换 access_token",
-  "appid": "请替换为控制台抖音小程序 AppID（tt 开头）",
+  "appid": "tt950ee3b30b6835d201",
   "setting": {
     "urlCheck": true,
     "es6": true,
