@@ -14,20 +14,24 @@
 - **`tt.showDouyinOpenAuth` 在开发者工具模拟器里可能不可用**，必须用 **抖音 App → 扫码预览 / 体验版** 测。  
 - 每次授权 **同一场景**；`ma.video.bind` 属于「抖音视频数据」场景（见官方 scope 表）。
 
-## 与服务端对接
+## 与服务端对接（jiankong-api 已内置）
 
 1. 用户点击「授权」→ `success` 里拿到 **`ticket`**。  
-2. 小程序 `tt.request` 把 **`ticket`** POST 到你们后端（需 HTTPS、域名已在控制台配置）。  
-3. 后端用 **`ticket` 作为 `code`**，加上 `client_key`、`client_secret` 调开放平台 **`/oauth/access_token/`**，得到 **`access_token`（act.xxx）**、**`open_id`**、**`refresh_token`**（若有），写入安全配置给 `jiankong-api` 使用。  
+2. 小程序 `tt.request` 把 **`ticket`** POST 到 **`https://<你的API域名>/douyin/open-auth/ticket`**（HTTPS，且域名已加入小程序 **request 合法域名**）。  
+3. 服务端（`jiankong-api`）用 **`ticket` 作为 `code`**，配合环境变量 **`DOUYIN_OPEN_PLATFORM_CLIENT_KEY`** / **`DOUYIN_OPEN_PLATFORM_CLIENT_SECRET`** 调开放平台 **`/oauth/access_token/`**，响应中的 **`access_token`、`open_id`** 可复制到 **`/etc/jiankong/douyin.env`** 的 `DOUYIN_OPENAPI_*`，再 **`systemctl restart jiankong-api`**。  
 
-具体字段名以 [获取 user access_token](https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/develop/server/interface-request-credential/user-authorization/get-user-access-token) 最新文档为准。
+详见仓库 **`docs/DOUYIN_OPENAPI_INTEGRATION.md`**。
 
 ## 配置后端地址
 
 修改 `pages/index/index.js` 顶部：
 
 ```javascript
-const AUTH_BACKEND_URL = 'https://你的域名/api/douyin/open-auth/callback';
+const AUTH_BACKEND_URL = 'https://你的域名/douyin/open-auth/ticket';
 ```
 
-（该接口需由你们在 `jiankong` 或其它服务中实现，本仓库仅提供小程序侧示例。）
+若服务端设置了 **`DOUYIN_OPENAUTH_CALLBACK_SECRET`**，同时填写：
+
+```javascript
+const AUTH_BACKEND_BEARER_SECRET = '与服务器相同的密钥';
+```

@@ -28,6 +28,22 @@
    本仓库提供最小示例工程：**`douyin-miniapp-auth/`**（见该目录 `README.md`，需用**抖音开发者工具**打开、**真机**调试）。
 4. 服务端按文档用 `code` 换 **`/oauth/access_token/`** 得到 **`access-token`（act.…）** 与 **`open_id`**，并做好**刷新/续期**（过期需重新授权或 refresh，以官方文档为准）。
 
+### jiankong-api 内置换票接口（已实现）
+
+小程序拿到 **`ticket`** 后，向你们已部署的 **HTTPS** `jiankong-api` 上报（需把域名加入小程序 **request 合法域名**）：
+
+- **路径**：`POST /douyin/open-auth/ticket`
+- **Header**：`Content-Type: application/json`  
+  若服务端设置了 **`DOUYIN_OPENAUTH_CALLBACK_SECRET`**，还须：  
+  `Authorization: Bearer <与密钥相同的字符串>`
+- **Body**：`{"ticket":"用户授权返回的 ticket"}`
+
+**响应 JSON**（成功时 `ok: true`）：`access_token`、`open_id`、`expires_in`、`refresh_token` 等。请仅在 **HTTPS** 下使用，并将 `access_token` / `open_id` 写入 **`/etc/jiankong/douyin.env`** 中的 `DOUYIN_OPENAPI_USER_ACCESS_TOKEN`、`DOUYIN_OPENAPI_OPEN_ID`，然后 **`systemctl restart jiankong-api`**。
+
+换票所需环境变量见 **`server/deploy/douyin.env.example`**：`DOUYIN_OPEN_PLATFORM_CLIENT_KEY`、`DOUYIN_OPEN_PLATFORM_CLIENT_SECRET`。
+
+小程序示例工程 **`douyin-miniapp-auth/pages/index/index.js`** 中配置 **`AUTH_BACKEND_URL`**（完整 URL，例如 `https://你的域名/douyin/open-auth/ticket`）及可选 **`AUTH_BACKEND_BEARER_SECRET`**。
+
 `videoid` 与开放平台 `item_id` 的转换见：  
 [videoid 转换 itemid](https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/develop/server/basic-abilities/video-id-convert/video-id-to-open-item-id)  
 （多用于小程序侧 `videoId` 与开放能力打通；若你从分享链只有数字 `aweme_id`，需按控制台能力用官方转换链路拿到 **open item_id**，再填入下方映射。）
@@ -71,3 +87,4 @@
 
 - 实现：`douyin_openapi.py`（仓库根目录）
 - 调度：`server/app/scheduler.py` 中 `_load_openapi_fetch_metrics_optional` 与 `_run_task` 优先调用顺序
+- 换票路由：`server/app/douyin_openauth.py`（`main.py` 已 `include_router`）

@@ -2,8 +2,11 @@
  * 自有抖音号授权：ma.video.bind（视频数据查询）→ 服务端用 ticket 换 act.xxx
  * 文档：https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/develop/api/open-interface/authorization/tt-show-douyin-open-auth/
  */
-// TODO: 改为你们线上 HTTPS 接口；域名须加入小程序「服务器域名」request 合法列表
+// TODO: 改为你们线上 HTTPS 接口；路径为 jiankong-api 的 POST /douyin/open-auth/ticket
+// 域名须加入小程序「服务器域名」request 合法列表
 const AUTH_BACKEND_URL = "";
+// 与服务端 DOUYIN_OPENAUTH_CALLBACK_SECRET 一致时填写；不启用服务端校验则留空
+const AUTH_BACKEND_BEARER_SECRET = "";
 
 Page({
   data: {
@@ -38,10 +41,14 @@ Page({
           });
           return;
         }
+        const headers = { "content-type": "application/json" };
+        if (AUTH_BACKEND_BEARER_SECRET) {
+          headers.Authorization = "Bearer " + AUTH_BACKEND_BEARER_SECRET;
+        }
         tt.request({
           url: AUTH_BACKEND_URL,
           method: "POST",
-          header: { "content-type": "application/json" },
+          header: headers,
           data: { ticket },
           success(r) {
             const body = r.data || {};

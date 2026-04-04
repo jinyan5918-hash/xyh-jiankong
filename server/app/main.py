@@ -43,9 +43,11 @@ from .schemas import (
 from .security import create_access_token, hash_password, verify_password
 from .scheduler import scheduler
 from .wecom import is_valid_wecom_webhook_url, pick_webhook_for_user, send_wecom_text
+from .douyin_openauth import router as douyin_openauth_router
 
 
 app = FastAPI(title="Douyin Monitor Auth Server", version="0.1.0")
+app.include_router(douyin_openauth_router)
 
 # 始终从本包下的 static 读取，避免启动时工作目录不同导致后台页面不是最新
 _ADMIN_HTML = Path(__file__).resolve().parent / "static" / "admin.html"

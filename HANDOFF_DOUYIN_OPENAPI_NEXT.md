@@ -23,10 +23,9 @@
 
 ## 明天建议优先顺序
 
-1. **后端换票接口（关键缺口）**  
-   - HTTPS 接收小程序 POST 的 **`ticket`**，用 **`client_key` + `client_secret`** 调开放平台 **`/oauth/access_token/`**（`ticket` 作文档中的 **`code`**），得到 **`act.xxx`、`open_id`、`refresh_token`**，安全存储并供 **`jiankong-api`** 使用。  
-   - 可在仓库 **`server/app`** 增加路由（环境变量读密钥，不写死）。  
-   - 小程序 **`pages/index/index.js`** 里配置 **`AUTH_BACKEND_URL`**，控制台配置 **request 合法域名**。
+1. **后端换票接口**（已实现：`POST /douyin/open-auth/ticket`，`server/app/douyin_openauth.py`）  
+   - 配置 **`DOUYIN_OPEN_PLATFORM_CLIENT_KEY` / `DOUYIN_OPEN_PLATFORM_CLIENT_SECRET`**，可选 **`DOUYIN_OPENAUTH_CALLBACK_SECRET`**。  
+   - 小程序 **`pages/index/index.js`**：`AUTH_BACKEND_URL`、`AUTH_BACKEND_BEARER_SECRET`；控制台 **request 合法域名**。
 
 2. **控制台**  
    - **`ma.video.bind`（视频数据查询）** 等能力审核通过情况。  
